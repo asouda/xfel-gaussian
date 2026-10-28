@@ -7,7 +7,13 @@ authors = [
     { name = "Alexander Soudackov", email = "asoudakov@icloud.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "gemmi>=0.7.5",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pandas>=3.1.0",
+    "scipy>=1.18.1",
+]
 
 [project.scripts]
 xfel-gaussian = "xfel_gaussian:main"
