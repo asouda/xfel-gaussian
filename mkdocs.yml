@@ -3,6 +3,8 @@ site_description: Gaussian fitting of positive peaks in CCP4 omit and difference
 repo_url: https://github.com/asouda/xfel-gaussian
 repo_name: asouda/xfel-gaussian
 
+use_directory_urls: false
+
 watch:
   - config/README.md
   - notebooks/README.md
