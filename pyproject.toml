@@ -1,7 +1,7 @@
 [project]
 name = "xfel-gaussian"
 version = "0.1.0"
-description = "Add your description here"
+description = "Gaussian decomposition of positive peaks in CCP4 omit and difference maps"
 readme = "README.md"
 authors = [
     { name = "Alexander Soudackov", email = "asoudakov@icloud.com" }
@@ -19,6 +19,13 @@ dependencies = [
 
 [project.scripts]
 xfel-gaussian = "xfel_gaussian:main"
+
+[dependency-groups]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.6",
+    "pymdown-extensions>=10.14",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
