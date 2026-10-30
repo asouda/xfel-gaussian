@@ -70,6 +70,12 @@ Fits the joint model and writes the [output files](outputs.md). Returns the dict
 
 `plot_fit(xyz, y, comp, fit, path)` writes the two-panel diagnostic figure. `comp` is the component DataFrame of the selected model.
 
+`residual_map_path(map_path)` is the input path with `_residual` inserted before the suffix.
+
+`gaussian_residual(rho, axes, starts, sampling, orth, components, radius_factor=5.0)` returns the map minus each component's Gaussian. The shared background is not removed. Each component is subtracted inside `radius_factor` times `sigma_1_A`.
+
+`write_map_like(source, values, destination)` writes `values` into a copy of the CCP4 header and grid at `source`. Non-finite samples become zero.
+
 `synthetic_benchmark(output, distances=(0.7, 1.0, 1.4, 1.8, 2.2, 2.8), width=0.8, noise=0.08, fix_centers=False, full_covariance=False)` writes and returns the two-peak recovery table.
 
 `write_centers_pdb(path, coordinates, serial_start=43042)` writes the HETATM records described in [Outputs](outputs.md).
@@ -95,7 +101,9 @@ Holds the original grid, a residual copy, and the Cartesian mapping.
 
 `robust_noise(y)` returns \(1.4826\) times the median absolute deviation of the finite values, and at least \(10^{-7}\).
 
-`choose_peak(rho, original_mask, exclusion, local_max_size=3)` returns `(index, height)` of the strongest eligible local maximum, or `None`.
+`choose_peak(rho, original_mask, exclusion, neighborhood_size=3)` returns `(index, height)` of the strongest eligible local maximum, or `None`. `neighborhood_size` is the odd side length of the cubic window.
+
+`spline_maximum_index(rho, idx, neighborhood_size, spline_order)` returns the continuous stored index of the maximum of a spline interpolant of the neighborhood around `idx`. Order 3 is cubic. Orders below 2, a window that is not entirely finite, and a spline that cannot be built all return `idx`.
 
 `gaussian(xyz, amp, center, sigma)` is the isotropic component without a background.
 
@@ -109,7 +117,7 @@ Holds the original grid, a residual copy, and the Cartesian mapping.
 
 ### `run(cfg, verbose=True)`
 
-Runs the subtraction loop and returns the centers DataFrame. Output paths are on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, and `diagnostics`.
+Runs the subtraction loop and returns the centers DataFrame. Output paths are on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, and `diagnostics`. `residual_map` is the file beside the input.
 
 `main(argv=None)` parses a single config-path argument and calls `run`.
 
@@ -130,5 +138,8 @@ Library defaults, before `config/peaks.yaml` overrides them:
 | `synthetic` | `False` | `save_steps` | `False` |
 | `fix_centers` | `False` | `fix_centers` | `False` |
 | `full_covariance` | `False` | `full_covariance` | `False` |
+| | | `neighborhood_size` | `3` |
+| | | `spline_seed` | `False` |
+| | | `spline_order` | `3` |
 
-The example `config/peaks.yaml` turns fixed centers and the full covariance on for both workflows and raises the joint component limit to 9. The file, not this table, is the configuration of a run.
+The example `config/peaks.yaml` turns fixed centers and the full covariance on for both workflows, raises the joint component limit to 9, and turns sequential spline seeding on (`spline_seed: true`, order 3, neighborhood side 3). The file, not this table, is the configuration of a run.

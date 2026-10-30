@@ -1,34 +1,33 @@
 # One configuration for both peak models.
 # Paths are relative to this file.
 
-map: ../data/9z35_omitOEC_withCa_extended_10A.map
+map: ../data/9z35_omitOEC_withCa_BGLU189_extended_10A.map
 
 multi_peaks:
-  # Cartesian Å. Null uses the strongest positive voxel.
-  center: null
-  radius: 4.5
-  max_components: 9
-  min_separation: 0.6
-  min_width: 0.35
-  max_width: 1.8
-  restarts: 2
-  output_prefix: ../results/multi_peaks
-  synthetic: false
-  # Hold each center on the detected local maximum instead of refining it.
-  fix_centers: true
-  # Full 3x3 covariance: a rotated ellipsoid. False keeps an isotropic width.
-  full_covariance: true
+    output_prefix: ../results/9z35_omitOEC_withCa_BGLU189_multi_peaks_fixed
+    center: null              # Center of the search sphere. Null uses the strongest positive voxel.
+    radius: 4.5               # Radius of the search sphere around the center.
+    max_components: 9         # Maximum number of peaks to find.
+    min_separation: 0.7       # Radius in Å of the exclusion sphere around a seed after each attempt.
+    min_width: 0.25           # Minimum width of the Gaussian fit.
+    max_width: 2.0            # Maximum width of the Gaussian fit.
+    restarts: 3               # Number of random restarts of the algorithm.
+    synthetic: false          # Use a synthetic map for testing.
+    fix_centers: true         # Hold each center on the detected local maximum instead of refining it.
+    full_covariance: true     # Full 3x3 covariance: a rotated ellipsoid. False keeps an isotropic width.
 
 sequential_peaks:
-  output_prefix: ../results/sequential_peaks
-  n_peaks: 9
-  threshold_sigma: 2.0
-  fit_radius: 2.2
-  sigma_min: 0.35
-  sigma_max: 1.8
-  # Used only when fix_centers is false: maximum center shift from the peak, in Å.
-  max_shift: 1.2
-  min_separation: 0.7
-  save_steps: false
-  fix_centers: true
-  full_covariance: true
+    output_prefix: ../results/9z35_omitOEC_withCa_BGLU189_sequential_peaks_fixed
+    n_peaks: 9                # Maximum number of peaks to find.
+    threshold_sigma: 2.0      # Stop when the strongest remaining peak is below this multiple of the robust scale of the original map.
+    fit_radius: 1.75          # Radius of the Gaussian fit.
+    sigma_min: 0.25           # Minimum width of the Gaussian fit.
+    sigma_max: 2.0            # Maximum width of the Gaussian fit.
+    max_shift: 1.2            # When fix_centers is false: maximum center shift from the seed, in Å.
+    min_separation: 0.7       # Radius in Å of the exclusion sphere around a seed after each attempt.
+    save_steps: false         # Save the steps of the algorithm to a file.
+    fix_centers: true         # Hold each center on the seed instead of refining it.
+    full_covariance: true     # Full 3x3 covariance: a rotated ellipsoid. False keeps an isotropic width.
+    neighborhood_size: 3      # Odd side length of the index neighborhood around a local maximum. 3 means 3x3x3.
+    spline_seed: true        # Place the seed at the maximum of a spline interpolant of that neighborhood.
+    spline_order: 3           # Order of that spline when spline_seed is true. 3 is cubic. Allowed values are 0 through 5.

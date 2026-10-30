@@ -26,7 +26,7 @@ where \(\mathbf q_{xyz}\) is \(\mathbf q\) reordered onto fractional \(x,y,z\), 
 
 The inverse map, Cartesian Å back to a stored index, is used only when a notebook samples a plane through the grid. The Gaussian itself is always evaluated in Cartesian Å. The sampled block is kept as a finite box. Opposite faces are not identified, and undefined voxels are not invented to fill a unit cell.
 
-The joint fit reports the shortest Cartesian length of the three stored-index steps and uses \(1.8\) times that length as the neighborhood for a local maximum. The sequential fit uses a \(3\times 3\times 3\) index neighborhood for the same idea.
+The joint fit reports the shortest Cartesian length of the three stored-index steps and uses \(1.8\) times that length as the neighborhood for a local maximum. The sequential fit uses a cubic index neighborhood of side `neighborhood_size` for the same idea. The default side is 3.
 
 ## The Gaussian family
 
@@ -268,9 +268,21 @@ and the search stops when the strongest remaining local maximum of the residual 
 
 The threshold is compared with the residual height at the chosen voxel, before the Gaussian is fit. The fitted amplitude can differ from that height because the baseline and the width absorb part of the peak.
 
+### Seed
+
+The detected voxel is a local maximum of the residual on the cubic index neighborhood. When `spline_seed` is false, that voxel's Cartesian position is the seed.
+
+When `spline_seed` is true, \(s\) is a tensor-product spline of order `spline_order` that interpolates the residual on the in-bounds neighborhood, using stored indices as coordinates. The seed is the Cartesian image of
+
+\[
+\mathbf q^\star = \arg\max_{\mathbf q} s(\mathbf q),
+\]
+
+with \(\mathbf q\) restricted to the index box of that neighborhood. Order 3 is cubic. Orders 0 and 1 attain the maximum at the detected voxel. The threshold still uses the residual sample at that voxel.
+
 ### Identifiability at one site
 
-Holding the center fixed answers a different question from refining it. A fixed center reports the shape of the density around the detected voxel, and a grid maximum that sits on a merged feature stays on that voxel. A free center can slide toward the better placement, up to `max_shift` in the sequential fit and anywhere in the joint ROI when centers are free, including onto a neighbor. Use fixed centers when the detected maxima are the objects of interest. Use free centers when the voxel maximum is only a start.
+Holding the center fixed answers a different question from refining it. A fixed center reports the shape of the density around the seed. By default the seed is the detected voxel, so a grid maximum that sits on a merged feature stays on that voxel. With `spline_seed`, a fixed center is the maximum of the interpolated neighborhood and can leave that voxel. A free center can slide farther, up to `max_shift` from the seed in the sequential fit and anywhere in the joint ROI when centers are free, including onto a neighbor. Use fixed centers when the chosen seeds are the objects of interest. Use free centers when the seed is only a start.
 
 ## Reading a result
 

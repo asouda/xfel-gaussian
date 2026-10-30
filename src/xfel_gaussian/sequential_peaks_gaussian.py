@@ -8,8 +8,11 @@ Usage:
 Read CCP4 without altering its extent, orientation, or origin. At the highest
 remaining local maximum, fit a local 3D Gaussian plus a constant baseline.
 The Gaussian is isotropic or a fully rotated ellipsoid. Its center is either
-refined or held at that detected maximum. Subtract only the Gaussian (not the
-local baseline) from the sampled map, then repeat.
+refined or held at the seed. By default the seed is the detected voxel. It
+can instead be the maximum of a spline interpolant inside that voxel's
+neighborhood. Subtract only the Gaussian (not the local baseline) from the
+sampled map, then repeat. The finished residual is written beside the input
+map, with ``_residual`` before the suffix, and again at ``{prefix}_residual.map``.
 
 The YAML file may be a flat mapping or a combined file with a
 ``sequential_peaks`` section and a shared ``map`` entry. See config/peaks.yaml.
@@ -24,8 +27,8 @@ import numpy as np
 import pandas as pd
 import gemmi
 import yaml
-from scipy.optimize import least_squares
-from scipy.ndimage import maximum_filter
+from scipy.optimize import least_squares, minimize
+from scipy.ndimage import map_coordinates, maximum_filter, spline_filter
 from scipy.linalg import solve_triangular
 import matplotlib
 if __name__ == '__main__':
@@ -46,6 +49,9 @@ DEFAULTS = dict(
     save_steps=False,
     fix_centers=False,
     full_covariance=False,
+    neighborhood_size=3,
+    spline_seed=False,
+    spline_order=3,
 )
 
 
@@ -94,6 +100,16 @@ def _as_bool(value, key):
     raise ValueError(f'{key} must be a boolean, got {value!r}')
 
 
+def _as_int(value, key):
+    if isinstance(value, bool):
+        raise ValueError(f'{key} must be an integer, got {value!r}')
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)) and np.isfinite(value) and float(value).is_integer():
+        return int(value)
+    raise ValueError(f'{key} must be an integer, got {value!r}')
+
+
 def resolve_config(cfg):
     """Apply defaults to the sequential-peak section and check the keys."""
     raw = section_config(cfg, 'sequential_peaks')
@@ -112,8 +128,14 @@ def resolve_config(cfg):
     if not Path(resolved['map']).is_file():
         raise FileNotFoundError(resolved['map'])
     resolved['output_prefix'] = str(_resolve_path(resolved, resolved['output_prefix']))
-    for key in ('save_steps', 'fix_centers', 'full_covariance'):
+    for key in ('save_steps', 'fix_centers', 'full_covariance', 'spline_seed'):
         resolved[key] = _as_bool(resolved[key], key)
+    resolved['neighborhood_size'] = _as_int(resolved['neighborhood_size'], 'neighborhood_size')
+    resolved['spline_order'] = _as_int(resolved['spline_order'], 'spline_order')
+    if resolved['neighborhood_size'] < 1 or resolved['neighborhood_size'] % 2 == 0:
+        raise ValueError('neighborhood_size must be a positive odd integer')
+    if not 0 <= resolved['spline_order'] <= 5:
+        raise ValueError('spline_order must be an integer from 0 through 5')
     if not (resolved['fit_radius'] > 0 and resolved['sigma_min'] > 0 and resolved['sigma_max'] > resolved['sigma_min']):
         raise ValueError('Invalid fitting radius or width bounds')
     if resolved['n_peaks'] < 1:
@@ -268,16 +290,96 @@ def robust_noise(y):
     return max(1.4826*mad, 1e-7)
 
 
-def choose_peak(rho, original_mask, exclusion, local_max_size=3):
-    # Exclude edges where local Gaussian parameters may be poorly constrained.
+def choose_peak(rho, original_mask, exclusion, neighborhood_size=3):
+    # A candidate equals the strongest valid residual in a cubic neighborhood.
+    # Outside the array the filter uses -inf, so the border needs no separate margin.
     valid = np.isfinite(rho) & original_mask & ~exclusion
     candidates = valid & (rho == maximum_filter(np.where(valid, rho, -np.inf),
-                                                  size=local_max_size, mode='constant', cval=-np.inf))
+                                                  size=neighborhood_size, mode='constant', cval=-np.inf))
     if not np.any(candidates): return None
     ind = np.argmax(np.where(candidates, rho, -np.inf))
     idx = np.unravel_index(ind, rho.shape)
     if not np.isfinite(rho[idx]): return None
     return np.array(idx), float(rho[idx])
+
+
+def _density_on_spline(coeffs, order, point):
+    sampled = map_coordinates(
+        coeffs, np.asarray(point, dtype=float).reshape(3, 1),
+        order=order, prefilter=False, mode='nearest',
+    )
+    return float(sampled[0])
+
+
+def _maximize_spline(patch, order, anchor):
+    """Index of the spline maximum inside a neighborhood patch.
+
+    ``anchor`` is the detected voxel in patch coordinates. It is returned when
+    the interpolant is no higher anywhere else in the patch.
+    """
+    coeffs = spline_filter(np.asarray(patch, dtype=np.float64), order=order)
+    shape = np.asarray(patch.shape, dtype=int)
+    anchor = np.clip(np.asarray(anchor, dtype=float), 0.0, shape - 1.0)
+    axes = []
+    for length in shape:
+        if length <= 1:
+            axes.append(np.zeros(1))
+            continue
+        count = min((int(length) - 1) * 8 + 1, 49)
+        axes.append(np.linspace(0.0, float(length - 1), count))
+    grids = np.meshgrid(*axes, indexing='ij')
+    coords = np.vstack([grid.ravel() for grid in grids])
+    sampled = map_coordinates(coeffs, coords, order=order, prefilter=False, mode='nearest')
+    if not np.isfinite(sampled).any():
+        raise ValueError('Spline evaluation is not finite')
+    start = coords[:, int(np.argmax(np.where(np.isfinite(sampled), sampled, -np.inf)))]
+    free = [axis for axis, length in enumerate(shape) if length > 1]
+    polished = start.copy()
+    if free:
+        def negative(reduced):
+            point = start.copy()
+            point[free] = reduced
+            return -_density_on_spline(coeffs, order, point)
+
+        bounds = [(0.0, float(shape[axis] - 1)) for axis in free]
+        result = minimize(negative, start[free], method='L-BFGS-B', bounds=bounds)
+        if result.x is not None and np.all(np.isfinite(result.x)):
+            polished = start.copy()
+            polished[free] = np.clip(np.asarray(result.x, dtype=float), 0.0, shape[free] - 1.0)
+    anchor_value = _density_on_spline(coeffs, order, anchor)
+    best = polished if _density_on_spline(coeffs, order, polished) >= _density_on_spline(coeffs, order, start) else start
+    best_value = _density_on_spline(coeffs, order, best)
+    tolerance = 1e-8 * max(1.0, abs(anchor_value))
+    if best_value <= anchor_value + tolerance:
+        return anchor
+    return best
+
+
+def spline_maximum_index(rho, idx, neighborhood_size, spline_order):
+    """Continuous stored index where a spline of the neighborhood is highest.
+
+    The window has side ``neighborhood_size`` and is centered on ``idx``.
+    It is clipped to the array. The interpolant is the ``scipy.ndimage``
+    spline of ``spline_order`` on stored-index coordinates: 3 is cubic, and
+    orders run from 0 through 5. Orders below 2 reach their maximum at a
+    sample. A window that is not entirely finite, or a spline that cannot
+    be built, returns ``idx``.
+    """
+    idx = np.asarray(idx, dtype=int)
+    if int(spline_order) < 2:
+        return idx.astype(float)
+    half = int(neighborhood_size) // 2
+    lo = np.maximum(idx - half, 0)
+    hi = np.minimum(idx + half + 1, rho.shape)
+    patch = np.asarray(rho[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]], dtype=np.float64)
+    if patch.size == 0 or not np.all(np.isfinite(patch)):
+        return idx.astype(float)
+    try:
+        anchor = idx.astype(float) - lo.astype(float)
+        point = _maximize_spline(patch, int(spline_order), anchor)
+    except (RuntimeError, ValueError):
+        return idx.astype(float)
+    return lo.astype(float) + np.asarray(point, dtype=float)
 
 
 def fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300,
@@ -343,11 +445,19 @@ def fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300,
     return shape
 
 
+def residual_map_path(map_path):
+    """Path of the residual CCP4 map: the input name with ``_residual`` before the suffix."""
+    source = Path(map_path)
+    suffix = source.suffix if source.suffix else '.map'
+    return source.with_name(f'{source.stem}_residual{suffix}')
+
+
 def write_centers_pdb(path, coordinates, serial_start=43042):
     """Write fitted Cartesian centers as fixed-column HETATM records.
 
     Records are 80 columns. The first four centers are named MN1–MN4 and
     later centers O1, O2, .... Trailing spaces are part of the record.
+    The file ends with an END record.
     """
     lines = []
     for i, xyz in enumerate(coordinates):
@@ -360,6 +470,7 @@ def write_centers_pdb(path, coordinates, serial_start=43042):
             f"HETATM{serial_start + i:5d} {name:<4s}BOEY A{601:4d}    "
             f"{x:8.3f}{y:8.3f}{z:8.3f}{1.00:6.2f}{27.27:6.2f}          {element:<4s}\n"
         )
+    lines.append("END\n")
     Path(path).write_text("".join(lines))
 
 
@@ -377,12 +488,18 @@ def run(cfg, verbose=True):
         dm.save_map(f'{prefix}_step00.map')
     if verbose:
         mode = 'full covariance' if cfg['full_covariance'] else 'isotropic'
-        where = 'fixed at detected maxima' if cfg['fix_centers'] else 'refined'
+        side = cfg['neighborhood_size']
+        if cfg['spline_seed']:
+            placed = (f'a spline maximum of order {cfg["spline_order"]} '
+                      f'in a {side}x{side}x{side} neighborhood')
+        else:
+            placed = f'the highest voxel of a {side}x{side}x{side} neighborhood'
+        where = f'fixed at {placed}' if cfg['fix_centers'] else f'refined from {placed}'
         print(f'Grid: {dm.original.shape}; robust map sigma={reference_noise:.5g}; '
               f'positive peak threshold={threshold:.5g}')
         print(f'Model: {mode}; centers {where}')
     for k in range(1, cfg['n_peaks'] + 1):
-        peak = choose_peak(dm.residual, valid, excluded)
+        peak = choose_peak(dm.residual, valid, excluded, cfg['neighborhood_size'])
         if peak is None:
             break
         idx, height = peak
@@ -390,7 +507,12 @@ def run(cfg, verbose=True):
             if verbose:
                 print(f'Stopping: strongest remaining eligible peak {height:.4f} below threshold.')
             break
-        seed = dm.to_cart(idx)
+        seed_index = idx.astype(float)
+        if cfg['spline_seed']:
+            seed_index = spline_maximum_index(
+                dm.residual, idx, cfg['neighborhood_size'], cfg['spline_order'],
+            )
+        seed = dm.to_cart(seed_index)
         try:
             fitted = fit_peak(
                 dm, seed, cfg['fit_radius'], (cfg['sigma_min'], cfg['sigma_max']), cfg['max_shift'],
@@ -410,6 +532,8 @@ def run(cfg, verbose=True):
                 x_A=float(center[0]), y_A=float(center[1]), z_A=float(center[2]),
                 peak_before=height, amplitude=fitted['amp'], background=fitted['bg'],
                 center_fixed=bool(cfg['fix_centers']), full_covariance=bool(cfg['full_covariance']),
+                spline_seed=bool(cfg['spline_seed']), spline_order=int(cfg['spline_order']),
+                neighborhood_size=int(cfg['neighborhood_size']),
                 R2=fitted['r2'], RMSE=fitted['rmse'], n_voxels=fitted['n'],
                 n_at_bound=fitted['n_at_bound'], success=fitted['success'],
                 integrated_gaussian=fitted['integrated_gaussian'],
@@ -433,11 +557,14 @@ def run(cfg, verbose=True):
     df = pd.DataFrame(history)
     centers_csv = f'{prefix}_centers.csv'
     centers_pdb = f'{prefix}_centers.pdb'
-    residual_map = f'{prefix}_residual.map'
+    # Same residual array at two paths: beside the other products, and beside the input map.
+    prefix_residual = f'{prefix}_residual.map'
+    residual_map = residual_map_path(cfg['map'])
     diagnostics = f'{prefix}_diagnostics.png'
     df.to_csv(centers_csv, index=False)
     coordinates = df[['x_A', 'y_A', 'z_A']].to_numpy() if len(df) else []
     write_centers_pdb(centers_pdb, coordinates)
+    dm.save_map(prefix_residual)
     dm.save_map(residual_map)
     if len(df):
         fig, axs = plt.subplots(1, 2, figsize=(11, 4.3))
@@ -450,10 +577,11 @@ def run(cfg, verbose=True):
         fig.savefig(diagnostics, dpi=180)
         plt.close(fig)
     if verbose:
-        print(f'Saved {len(df)} components; results: {centers_csv}, {centers_pdb}, and {residual_map}')
+        print(f'Saved {len(df)} components; results: {centers_csv}, {centers_pdb}, {prefix_residual}, and {residual_map}')
     df.attrs['centers_csv'] = centers_csv
     df.attrs['centers_pdb'] = centers_pdb
-    df.attrs['residual_map'] = residual_map
+    df.attrs['residual_map'] = str(residual_map)
+    df.attrs['prefix_residual_map'] = prefix_residual
     df.attrs['diagnostics'] = diagnostics
     return df
 

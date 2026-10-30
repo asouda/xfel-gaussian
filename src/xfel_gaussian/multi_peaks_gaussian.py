@@ -5,7 +5,9 @@ Requires numpy, scipy, pandas, matplotlib, gemmi, and pyyaml.
 Fits 1..K Gaussian components plus a constant background in a local Cartesian
 spherical ROI, ranks the models by BIC, and checks center identifiability.
 Each component is either isotropic or a fully rotated ellipsoid (full covariance).
-Centers are either refined or held at the detected local maxima.
+Centers are either refined or held at the detected local maxima. After the
+selected model is written, the input map minus those Gaussians is saved as a
+CCP4 file beside the input and again at ``{prefix}_residual.map``.
 
 The CSV is MODEL-derived, not a validated atomic assignment. The PDB file
 labels the first four centers MN1–MN4 and later centers O1, O2, and so on
@@ -475,11 +477,78 @@ def synthetic_benchmark(output, distances=(0.7, 1.0, 1.4, 1.8, 2.2, 2.8), width=
     return data
 
 
+def residual_map_path(map_path):
+    """Path of the residual CCP4 map: the input name with ``_residual`` before the suffix."""
+    source = Path(map_path)
+    suffix = source.suffix if source.suffix else '.map'
+    return source.with_name(f'{source.stem}_residual{suffix}')
+
+
+def _map_frame(axes, starts, sampling, orth):
+    origin = to_cart(np.zeros(3), axes, starts, sampling, orth)
+    step = np.stack([
+        to_cart(np.eye(3)[i], axes, starts, sampling, orth) - origin
+        for i in range(3)
+    ], axis=1)
+    return origin, np.linalg.inv(step)
+
+
+def gaussian_residual(rho, axes, starts, sampling, orth, components, radius_factor=5.0):
+    """Input density minus each fitted Gaussian, leaving the shared background in place.
+
+    Each Gaussian is removed inside a sphere of radius ``radius_factor`` times its
+    longest principal width. Voxels outside those spheres are unchanged.
+    """
+    residual = np.array(rho, dtype=np.float64, copy=True)
+    if components is None or len(components) == 0:
+        return residual
+    origin, invstep = _map_frame(axes, starts, sampling, orth)
+    for row in components.itertuples(index=False):
+        center = np.array([row.x_A, row.y_A, row.z_A], dtype=float)
+        cholesky = np.array([
+            [row.L00, 0.0, 0.0],
+            [row.L10, row.L11, 0.0],
+            [row.L20, row.L21, row.L22],
+        ], dtype=float)
+        radius = radius_factor * float(row.sigma_1_A)
+        if not np.isfinite(radius) or radius <= 0 or not np.isfinite(row.amplitude):
+            continue
+        index = (center - origin) @ invstep.T
+        reach = radius * np.linalg.norm(invstep, axis=1) + 2
+        lo = np.maximum(0, np.floor(index - reach).astype(int))
+        hi = np.minimum(residual.shape, np.ceil(index + reach).astype(int) + 1)
+        if np.any(lo >= hi):
+            continue
+        idx = np.indices(tuple(int(b - a) for a, b in zip(lo, hi))).reshape(3, -1).T + lo
+        xyz = to_cart(idx, axes, starts, sampling, orth)
+        keep = (np.linalg.norm(xyz - center, axis=1) <= radius) & np.isfinite(residual[tuple(idx.T)])
+        if not np.any(keep):
+            continue
+        idx = idx[keep]
+        xyz = xyz[keep]
+        removed = float(row.amplitude) * np.exp(-0.5 * mahalanobis2(xyz, center, cholesky))
+        residual[tuple(idx.T)] -= removed
+    return residual
+
+
+def write_map_like(source, values, destination):
+    """Write ``values`` into a copy of the input CCP4 header and grid."""
+    copied = gemmi.read_ccp4_map(str(source), setup=False)
+    grid = np.array(copied.grid, copy=False)
+    if tuple(grid.shape) != tuple(np.shape(values)):
+        raise ValueError('Residual shape does not match the input map')
+    grid[:] = np.where(np.isfinite(values), values, 0).astype(np.float32)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    copied.write_ccp4_map(str(destination))
+
+
 def write_centers_pdb(path, coordinates, serial_start=43042):
     """Write fitted Cartesian centers as fixed-column HETATM records.
 
     Records are 80 columns. The first four centers are named MN1–MN4 and
     later centers O1, O2, .... Trailing spaces are part of the record.
+    The file ends with an END record.
     """
     lines = []
     for i, xyz in enumerate(coordinates):
@@ -492,6 +561,7 @@ def write_centers_pdb(path, coordinates, serial_start=43042):
             f"HETATM{serial_start + i:5d} {name:<4s}BOEY A{601:4d}    "
             f"{x:8.3f}{y:8.3f}{z:8.3f}{1.00:6.2f}{27.27:6.2f}          {element:<4s}\n"
         )
+    lines.append("END\n")
     Path(path).write_text("".join(lines))
 
 
@@ -535,12 +605,18 @@ def run(cfg, verbose=True):
     pairs.to_csv(str(prefix) + '_pairs.csv', index=False)
     diagnostics = str(prefix) + '_diagnostics.png'
     plot_fit(xyz, y, comps, fit, diagnostics)
+    prefix_residual = str(prefix) + '_residual.map'
+    residual_map = residual_map_path(cfg['map'])
+    residual = gaussian_residual(rho, axes, starts, sampling, orth, comps)
+    write_map_like(cfg['map'], residual, prefix_residual)
+    write_map_like(cfg['map'], residual, residual_map)
     if verbose:
         print('\nModel comparison:\n', comparison.to_string(index=False))
         print('\nBIC-selected centers (Cartesian Å):\n', comps.to_string(index=False))
         print('\nPair separations:\n', pairs.to_string(index=False) if len(pairs) else '(one component)')
         print('\nNote: K, BIC, and covariance SE do not alone prove physical resolvability.')
         print(f'Centers PDB: {centers_pdb}')
+        print(f'Residual maps: {prefix_residual} and {residual_map}')
     return {
         'comparison': comparison,
         'components': comps,
@@ -550,6 +626,8 @@ def run(cfg, verbose=True):
         'centers_csv': str(prefix) + '_centers.csv',
         'centers_pdb': centers_pdb,
         'pairs_csv': str(prefix) + '_pairs.csv',
+        'residual_map': str(residual_map),
+        'prefix_residual_map': prefix_residual,
         'roi_center': np.asarray(center, dtype=float),
         'background': float(fit.x[-1]),
     }

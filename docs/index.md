@@ -5,9 +5,9 @@
 Two workflows share `config/peaks.yaml`:
 
 - The **joint fit** places one to \(K_{\max}\) positive Gaussians, plus a single constant background, inside a Cartesian sphere. It fits every component count and keeps the model with the lowest Bayesian information criterion (BIC).
-- The **sequential fit** finds the strongest remaining local maximum, fits one Gaussian and a local baseline there, subtracts only the Gaussian, and repeats.
+- The **sequential fit** finds the strongest remaining local maximum, fits one Gaussian and a local baseline there, subtracts only the Gaussian, and repeats. The seed is the detected voxel, or the maximum of a spline interpolant of that voxel's neighborhood when `spline_seed` is set.
 
-Each Gaussian is either isotropic or a fully rotated ellipsoid. The ellipsoid is parameterized by a Cholesky factor so the covariance stays positive definite. Centers are either free parameters or held on the detected local maxima.
+Each Gaussian is either isotropic or a fully rotated ellipsoid. The ellipsoid is parameterized by a Cholesky factor so the covariance stays positive definite. Centers are either free parameters or held on the seed. In the joint fit that seed is a detected local maximum.
 
 ```bash
 uv run python -m xfel_gaussian.multi_peaks_gaussian config/peaks.yaml

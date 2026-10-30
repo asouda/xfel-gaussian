@@ -21,7 +21,7 @@ Joint fit of K = 1, ..., Kmax positive Gaussians plus one constant background in
 | `min_width` | `0.35` | Lower bound on an isotropic width, or on a Cholesky diagonal, in Å. |
 | `max_width` | `1.8` | Upper bound on an isotropic width, or on the absolute value of a Cholesky entry, in Å. Must exceed `min_width`. |
 | `restarts` | `3` | Bounded least-squares starts. The first start is unperturbed. Later starts jitter a free center and the initial width. Must be at least 1. |
-| `output_prefix` | `multi_mn` | Path prefix for the CSV, PDB, and diagnostic figure. |
+| `output_prefix` | `multi_mn` | Path prefix for the CSV, PDB, diagnostic figure, and `{prefix}_residual.map`. The same residual is also written beside the input map. |
 | `synthetic` | `false` | If true, ignore the map and run the built-in two-peak recovery. `fix_centers`, `full_covariance`, and `output_prefix` still apply. The benchmark uses its own grid, width bounds `(0.4, 1.4)`, and two restarts. |
 | `fix_centers` | `false` | Hold each center on its detected seed. Seeds are then local maxima. If false, centers are free inside the ROI bounding box. |
 | `full_covariance` | `false` | Fit a rotated ellipsoid through six Cholesky entries. If false, each component has one isotropic width. |
@@ -30,11 +30,11 @@ Joint fit of K = 1, ..., Kmax positive Gaussians plus one constant background in
 
 ## `sequential_peaks`
 
-Fit one positive Gaussian and a local baseline at the strongest remaining local maximum, subtract only the Gaussian, and repeat.
+Fit one positive Gaussian and a local baseline at the strongest remaining local maximum, subtract only the Gaussian, and repeat. The center is held at the seed or refined from it. The seed is the detected voxel, or the maximum of a spline in that voxel's neighborhood.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `output_prefix` | `sequential_peaks` | Path prefix for the CSV, PDB, residual map, and diagnostic figure. |
+| `output_prefix` | `sequential_peaks` | Path prefix for the CSV, PDB, `{prefix}_residual.map`, and diagnostic figure. The same residual is also written beside the input map. |
 | `n_peaks` | `6` | Maximum number of subtraction attempts. The loop also stops when no eligible peak remains above threshold. |
 | `threshold_sigma` | `2.0` | Stop when the strongest remaining peak is below this multiple of the robust scale of the original map. |
 | `fit_radius` | `2.2` | Radius in Å of the sphere used for each one-peak fit. Must be positive. |
@@ -43,8 +43,13 @@ Fit one positive Gaussian and a local baseline at the strongest remaining local 
 | `max_shift` | `1.2` | If centers are refined, each center stays within this distance in Å of its seed. Ignored when `fix_centers` is true. |
 | `min_separation` | `0.7` | Radius in Å of the exclusion sphere placed around a seed after each attempt, so the next peak is a different site. |
 | `save_steps` | `false` | Write a CCP4 map of the residual before subtraction and after each accepted peak. |
-| `fix_centers` | `false` | Hold the center at the detected voxel. If false, the center may move by up to `max_shift`. |
+| `fix_centers` | `false` | Hold the center at the seed. If false, the center may move by up to `max_shift`. |
 | `full_covariance` | `false` | Same shape choice as in the joint fit. |
+| `neighborhood_size` | `3` | Odd side length of the cubic index neighborhood. `3` is a 3×3×3 window. A voxel is a local maximum when it equals the strongest valid residual in this window. |
+| `spline_seed` | `false` | If true, the seed is the maximum of a spline interpolant of the residual inside that neighborhood. If false, the seed is the detected voxel. |
+| `spline_order` | `3` | Order of the spline used when `spline_seed` is true. `3` is cubic. Integers from 0 through 5 are accepted. Orders 0 and 1 keep the seed on the detected voxel. |
+
+`peaks.yaml` turns spline seeding on (`spline_seed: true`, `spline_order: 3`, `neighborhood_size: 3`), holds centers fixed, fits a full covariance, and sets `n_peaks: 9`, `fit_radius: 1.75`, `sigma_min: 0.25`, and `sigma_max: 2.0`. The output prefix is under `results/`. Library defaults leave `spline_seed` off.
 
 ## Which section is read
 

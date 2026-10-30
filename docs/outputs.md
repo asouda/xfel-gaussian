@@ -7,9 +7,20 @@ Centers are Cartesian ångströms in the map's orthogonal frame. Density, amplit
 !!! warning "Labels are not atoms"
     The center tables are model-derived. The PDB atom names `MN1`–`MN4` and then `O1`, `O2`, ... exist so the coordinates can be opened beside a structure. They are not an assignment of manganese or oxygen.
 
+## Residual maps
+
+After the selected peaks have been fitted, both workflows write the input density minus those Gaussians. The joint shared background and the sequential local baselines stay in the map. Each Gaussian is removed inside a sphere of radius five times its longest principal width. Voxels outside every such sphere are unchanged. Non-finite samples are written as zero. The CCP4 grid, starts, axis order, and cell are copied from the input.
+
+The same array is written twice:
+
+- Beside the input. `directory/name.map` becomes `directory/name_residual.map`. A `.ccp4` input keeps that suffix. Both workflows use this path, so the file matches the workflow that finished last.
+- `{prefix}_residual.map`, next to that workflow's other products. The other workflow does not replace this copy.
+
+An empty sequential search still writes both files, and they match the input. `synthetic: true` does not read a map and does not write a residual.
+
 ## Joint fit
 
-A map run writes five files. `synthetic: true` writes only the synthetic CSV and skips the rest.
+A map run writes the tables and figure below, plus the residual maps above. `synthetic: true` writes only the synthetic CSV and skips the rest.
 
 ### `{prefix}_models.csv`
 
@@ -90,12 +101,13 @@ One row per accepted peak, in subtraction order. A skipped or non-positive fit d
 | Column | Meaning |
 | --- | --- |
 | `iteration` | Search attempt, counting from 1. Skipped sites are not rows, so the numbers can jump. |
-| `seed_x_A`, `seed_y_A`, `seed_z_A` | Cartesian position of the detected voxel. |
+| `seed_x_A`, `seed_y_A`, `seed_z_A` | Cartesian position of the seed. The detected voxel when `spline_seed` is false, and the spline maximum when `spline_seed` is true. |
 | `x_A`, `y_A`, `z_A` | Fitted center. Equal to the seed when `fix_centers` is true. |
-| `peak_before` | Residual density at the seed before this fit. |
+| `peak_before` | Residual density at the detected voxel before this fit. The threshold uses this value. |
 | `amplitude` | Fitted \(A\). |
 | `background` | Baseline of this peak only. It is not subtracted. |
 | `center_fixed`, `full_covariance` | The switches used. |
+| `spline_seed`, `spline_order`, `neighborhood_size` | How the seed was placed. `spline_order` is used when `spline_seed` is true. Orders below 2 leave the seed on the detected voxel. |
 | `R2`, `RMSE` | Fit quality inside that peak's sphere. |
 | `n_voxels` | Finite voxels in the sphere. |
 | `n_at_bound` | Parameters sitting on a bound. |
@@ -109,10 +121,6 @@ The longest principal width is the radius scale of the subtraction. It is not gi
 
 See below. The sequential and joint writers use the same record layout.
 
-### `{prefix}_residual.map`
-
-CCP4 map of the residual after every accepted subtraction, in the original grid, starts, axis order, and cell. Voxels that were never inside a subtraction sphere are unchanged. Non-finite residual values are written as zero. If no peak was accepted, this file matches the input densities.
-
 ### `{prefix}_stepNN.map`
 
 Written only when `save_steps` is true. `step00` is the residual before any subtraction. `step01` and later follow each accepted peak. Failed attempts do not produce a step.
@@ -123,7 +131,7 @@ Written when at least one peak was accepted. Left: fitted amplitude against iter
 
 ## PDB records
 
-Both workflows write one `HETATM` record per center, 80 columns, serial numbers starting at 43042.
+Both workflows write one `HETATM` record per center, 80 columns, serial numbers starting at 43042. The file ends with an `END` record.
 
 - Columns 13–16 are the atom name: `MN1`, `MN2`, `MN3`, `MN4` for the first four centers, then `O1`, `O2`, and so on.
 - The four characters `BOEY` are written starting at column 17, so the alternate-location column is `B` and the residue name is `OEY`. Chain is `A` and the residue sequence is 601.
@@ -143,6 +151,6 @@ Those filenames are set inside the notebooks and do not use `output_prefix`. The
 
 ## Return values
 
-The joint `run` returns a dictionary. A map run contains `comparison`, `components`, and `pairs` as DataFrames, plus `diagnostics`, `models_csv`, `centers_csv`, `centers_pdb`, `pairs_csv`, `roi_center`, and `background`. A synthetic run contains `synthetic` and `synthetic_csv` only.
+The joint `run` returns a dictionary. A map run contains `comparison`, `components`, and `pairs` as DataFrames, plus `diagnostics`, `models_csv`, `centers_csv`, `centers_pdb`, `pairs_csv`, `residual_map`, `prefix_residual_map`, `roi_center`, and `background`. `residual_map` is the file beside the input. `prefix_residual_map` is `{prefix}_residual.map`. A synthetic run contains `synthetic` and `synthetic_csv` only.
 
-The sequential `run` returns the centers DataFrame. Paths are stored on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, and `diagnostics`. The diagnostics path is set even when the figure was not written because no peak was accepted.
+The sequential `run` returns the centers DataFrame. Paths are stored on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, and `diagnostics`. `residual_map` is the file beside the input and `prefix_residual_map` is `{prefix}_residual.map`. The diagnostics path is set even when the figure was not written because no peak was accepted.

@@ -3,9 +3,9 @@
 Gaussian models for positive peaks in CCP4 omit and difference electron-density maps. Two workflows share one YAML file:
 
 - **Joint fit** (`xfel_gaussian.multi_peaks_gaussian`): several positive Gaussians and one background in a spherical region of interest. The number of components is chosen by the Bayesian information criterion (BIC).
-- **Sequential fit** (`xfel_gaussian.sequential_peaks_gaussian`): fit the strongest remaining local maximum, subtract that Gaussian from the map, and repeat.
+- **Sequential fit** (`xfel_gaussian.sequential_peaks_gaussian`): fit the strongest remaining local maximum, subtract that Gaussian from the map, and repeat. The seed is that voxel, or the maximum of a spline inside its neighborhood.
 
-Each component is either an isotropic Gaussian or a fully rotated ellipsoid. Centers are either refined or held at the detected local maxima.
+Each component is either an isotropic Gaussian or a fully rotated ellipsoid. Centers are either refined or held at the seed. In the joint fit the seed is a detected local maximum. In the sequential fit it is the detected voxel unless `spline_seed` moves it to the spline maximum.
 
 The fitted centers describe map features. Names written into the PDB output are viewing labels, and the Gaussian integral is not a calibrated electron count. The [theory chapter](docs/theory.md) states what the parameters mean.
 
