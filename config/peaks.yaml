@@ -1,7 +1,8 @@
 # One configuration for both peak models.
 # Paths are relative to this file.
 
-map: ../data/9z35_omitOEC_withCa_BGLU189_extended_10A.map
+#map: ../data/9z35_omitOEC_withCa_BGLU189_extended_10A.map
+map: ../data/9z35_refmac3C_FoFc_OECA.mrc
 
 multi_peaks:
     output_prefix: ../results/9z35_omitOEC_withCa_BGLU189_multi_peaks_fixed
@@ -20,9 +21,9 @@ sequential_peaks:
     output_prefix: ../results/9z35_omitOEC_withCa_BGLU189_sequential_peaks_fixed
     n_peaks: 9                # Maximum number of peaks to find.
     threshold_sigma: 2.0      # Stop when the strongest remaining peak is below this multiple of the robust scale of the original map.
-    fit_radius: 1.75          # Radius of the Gaussian fit.
-    sigma_min: 0.25           # Minimum width of the Gaussian fit.
-    sigma_max: 2.0            # Maximum width of the Gaussian fit.
+    fit_radius: 1.4          # Radius of the Gaussian fit.
+    sigma_min: 0.1           # Minimum width of the Gaussian fit.
+    sigma_max: 2.5            # Maximum width of the Gaussian fit.
     max_shift: 1.2            # When fix_centers is false: maximum center shift from the seed, in Å.
     min_separation: 0.7       # Radius in Å of the exclusion sphere around a seed after each attempt.
     save_steps: false         # Save the steps of the algorithm to a file.
