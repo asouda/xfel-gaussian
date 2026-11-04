@@ -8,8 +8,8 @@ The library implements two positive-peak workflows. The notebooks add two single
 | --- | --- | --- | --- | --- |
 | Components in one fit | \(1 \ldots K_{\max}\), one shared background | one Gaussian and its own baseline | one | one |
 | Amplitude | non-negative | non-negative | signed | signed |
-| Shape | isotropic, or full \(\Sigma = LL^\top\) | isotropic, or full \(\Sigma = LL^\top\) | diagonal \(\Sigma\) on \(x,y,z\) | full \(\Sigma = LL^\top\) |
-| Center | fixed at a local maximum, or free in the ROI | fixed at the seed, or free within `max_shift`. The seed is the detected voxel, or a spline maximum in its neighborhood | refined inside the fit sphere | fixed at the detected extremum |
+| Shape | isotropic, or full \(\Sigma = LL^\top\) | isotropic, full \(\Sigma = LL^\top\), or a spherical shell average | diagonal \(\Sigma\) on \(x,y,z\) | full \(\Sigma = LL^\top\) |
+| Center | fixed at a local maximum, or free in the ROI | fixed at the seed, or free within `max_shift`. The seed is the detected voxel, or a spline maximum in its neighborhood. The spherical method stays on the detected voxel | refined inside the fit sphere | fixed at the detected extremum |
 | How many peaks | BIC chooses \(K\) | threshold, exclusion, and `n_peaks` | score threshold and minimum distance | score threshold and minimum distance |
 | Map update | none | subtract the Gaussian, keep the baseline | none | none |
 
@@ -21,7 +21,7 @@ BIC chooses \(K\) inside the shape you configured. It does not choose between an
 
 Both library programs read the CCP4 grid with `gemmi.read_ccp4_map(..., setup=False)`. The array, the start indices, the axis permutation, and the unit-cell orthogonalization stay as stored. Coordinates of every Gaussian are Cartesian ångströms. Index arithmetic is used only to pick up voxel values.
 
-Voxels outside the sampled array are never wrapped around. A sphere that hangs off the edge of a crop simply contains fewer points. The joint fit refuses a region of interest with fewer than 30 finite voxels. A sequential one-peak fit skips a seed with fewer than 35 finite voxels.
+Voxels outside the sampled array are never wrapped around. A sphere that hangs off the edge of a crop simply contains fewer points. The joint fit refuses a region of interest with fewer than 30 finite voxels. A sequential least-squares fit skips a seed with fewer than 35 finite voxels. A spherical fit skips a seed that does not contain the center voxel and at least two further radial shells.
 
 The density values are the numbers stored in the map. Nothing rescales them to electrons or to a global \(\sigma\). The sequential threshold is the only library step that normalizes a height, and it uses a robust scale of the original map, documented below.
 
@@ -47,7 +47,7 @@ flowchart TD
 
 4. **Score the fits.** For each \(K\) the program records the residual sum of squares, RMSE, \(R^2\), AIC, BIC, the optimizer success flag, and how many parameters sit on a bound. The selected model is the smallest BIC. An exact tie keeps the smaller \(K\), because the first minimum in the table wins. A fit is still eligible when the solver's success flag is false; the flag is a column, not a gate.
 
-5. **Write the selected model.** Centers, shape descriptors, pairwise separations, a PDB file of the centers, and a two-panel diagnostic figure are written at `output_prefix`. The figure is observed density against the model, and residuals against the Cartesian axis along which the ROI extends farthest. The input map minus the selected Gaussians, with the shared background left in place, is then written as a CCP4 map. One copy sits beside the input, named by inserting `_residual` before the input suffix. The other is `{prefix}_residual.map`. Details are in [Outputs](outputs.md).
+5. **Write the selected model.** Centers, shape descriptors, pairwise separations, a PDB file of the centers, and a two-panel diagnostic figure are written at `output_prefix`. The figure is observed density against the model, and residuals against the Cartesian axis along which the ROI extends farthest. The input map minus the selected Gaussians, with the shared background left in place, is then written as a CCP4 map. Each Gaussian is removed inside `subtraction_radius` Å, or inside five times its longest principal width when that key is `null`. `save_gaussians: true` also writes `{prefix}_gaussian01.map` and the following numbers, one file per selected component. One copy sits beside the input, named by inserting `_residual` before the input suffix. The other is `{prefix}_residual.map`. Details are in [Outputs](outputs.md).
 
 `min_separation` spaces the seeds. It is not a constraint during refinement, so free centers can approach each other. The pairs table is the place to see the distances that were actually fit.
 
@@ -86,9 +86,13 @@ flowchart TD
 
    When `spline_seed` is false, the seed is the Cartesian position of the detected voxel. When `spline_seed` is true, the residual in that neighborhood is interpolated with a tensor-product spline of order `spline_order` on stored-index coordinates, and the seed is the Cartesian position of the maximum of the interpolant. Order 3 is cubic. Orders 0 through 5 are accepted, the range implemented by `scipy.ndimage`. Orders 0 and 1 reach their maximum at a sample, so the seed stays on the detected voxel. The maximum of a higher-order spline is found by sampling the interpolant on a fine index grid inside the window and polishing that sample with a bounded quasi-Newton search. The detected voxel is kept when the interpolant is no higher elsewhere. The search stays inside the index box of the neighborhood, clipped where the window meets the edge of the array. If any value in that box is non-finite, or the spline cannot be built, the seed stays on the detected voxel. The Cartesian conversion is the same orthogonalization as the joint fit. The example `config/peaks.yaml` sets `spline_seed: true` with order 3 and a \(3\times 3\times 3\) neighborhood.
 
-3. **Stop or fit.** If no candidate remains, the loop ends. If the residual height is below the threshold, the loop ends. Otherwise one Gaussian and a constant baseline are fit to the finite voxels inside `fit_radius` of the seed. The initial amplitude is the local peak above the 20th percentile. The initial width is `fit_radius / 3`, clipped to `[sigma_min, sigma_max]`. The initial Cholesky factor is that width times the identity, so anisotropy is introduced only when it reduces the residual. The evaluation budget is 300 residual calls, or at least 900 when the covariance is full.
+3. **Stop or fit.** If no candidate remains, the loop ends. If the residual height is below the threshold, the loop ends. Otherwise one Gaussian and a constant baseline are fit inside `fit_radius` of the seed. `zero_baseline` holds that baseline at zero for every peak.
 
-4. **Accept and subtract.** A fit is accepted when the solver reports success and the amplitude is positive. Only the Gaussian is subtracted, inside a sphere of radius \(5\) times the longest principal width. The fitted baseline stays in the map. Leaving the baseline in place avoids a step-wise drift of the whole residual. The subtraction uses the Mahalanobis form of the fitted factor, including the isotropic case, where the factor is \(\sigma I\).
+   For `isotropic` and `full_covariance`, the data are the finite voxels in that sphere. The initial amplitude is the local peak above the 20th percentile. The initial width is `fit_radius / 3`, clipped to `[sigma_min, sigma_max]`. The initial Cholesky factor is that width times the identity, so anisotropy is introduced only when it reduces the residual. The evaluation budget is 300 residual calls, or at least 900 when the covariance is full.
+
+   For `spherical`, the seed is the detected voxel. `spline_seed` and a free center are not used. The voxels inside `fit_radius` are averaged on lattice shells about that voxel: one shell for each index radius \(\Delta i^2+\Delta j^2+\Delta k^2\). Face neighbors are averaged together, including on a slightly non-cubic grid. One isotropic Gaussian plus a baseline is fit to the shell means, with one weight per shell. The starting width is the curvature width of the center and the first shell at zero baseline, \(\sigma = r_1 / \sqrt{2\ln(\bar\rho(0)/\bar\rho(r_1))}\). The accepted width is the least-squares width of the radial profile, clipped to `[sigma_min, sigma_max]`. A second derivative alone fixes the ratio of amplitude to \(\sigma^2\), not the width, once a baseline is free. The profile fit separates the three, unless `zero_baseline` holds the baseline at zero. A seed with fewer than three shells is skipped.
+
+4. **Accept and subtract.** A fit is accepted when the solver reports success and the amplitude is positive. Only the Gaussian is subtracted, inside a sphere. The radius is `subtraction_radius` in Å when that key is set, and five times the longest principal width when it is `null`. The fitted baseline stays in the map. Leaving the baseline in place avoids a step-wise drift of the whole residual. The subtraction uses the Mahalanobis form of the fitted factor, including the isotropic case, where the factor is \(\sigma I\).
 
 5. **Exclude the site.** Whether or not the fit was accepted, voxels of the original grid within `min_separation` of the fitted center (or of the seed, if the fit raised a local error) are masked. The next search cannot return that neighborhood. A failed or non-positive fit is omitted from the table and still consumes the site.
 
@@ -96,7 +100,7 @@ flowchart TD
 
 7. **Write the residual.** The map at the end of the loop is the input minus every accepted Gaussian. Local baselines are still present. That array is written beside the input, with `_residual` inserted before the input suffix, and again as `{prefix}_residual.map`. An empty search writes the input densities to both paths.
 
-`save_steps: true` writes the residual before any subtraction as `step00`, then one CCP4 map after each accepted peak. Failed attempts do not get a step file.
+`save_steps: true` writes the residual before any subtraction as `step00`, then one CCP4 map after each accepted peak. Failed attempts do not get a step file. `save_gaussians: true` writes `{prefix}_gaussian01.map` and the following numbers, one map for each accepted Gaussian, in centers-table order.
 
 When centers are free, a center can move at most `max_shift` from its seed. Exclusion is applied around the refined center, and the next detected voxel lies outside that sphere, but the next refinement can move back toward the previous center by up to `max_shift`. Fixed centers cannot move. A later spline seed can still fall closer than `min_separation` to an earlier center, because exclusion masks voxels and the spline maximum may lie between the new voxel and a masked neighbor.
 
@@ -114,11 +118,13 @@ Configuration errors are raised before any fit. The usual ones:
 - A key is not in that workflow's set. A flat file and a sectioned file are both legal; a typo in a key is not.
 - `min_width` and `max_width`, or `sigma_min` and `sigma_max`, are not a positive proper interval.
 - `radius`, `max_components`, `restarts`, `fit_radius`, or `n_peaks` is not positive.
+- `subtraction_radius` is set and is not a positive number of Å. `null` keeps the default of five principal widths.
 - `neighborhood_size` is not a positive odd integer, or `spline_order` is not an integer from 0 through 5.
 - `map` is missing, or the path is not an existing file. The joint workflow allows a missing map only when `synthetic` is true.
 - `center` is present and is not three Cartesian numbers.
 - A boolean option is neither a Boolean nor one of `true`, `yes`, `1`, `false`, `no`, `0`.
+- Sequential `method` is set and is not `isotropic`, `full_covariance`, or `spherical`.
 
 During the joint fit the run also stops when the sphere misses the sampled grid, when fewer than 30 finite voxels fall inside it, when `fix_centers` finds no local maximum, or when no seed rises above the 20th percentile.
 
-During the sequential fit, a seed that falls outside the map or that has too few finite voxels is skipped with a message when `verbose` is true. The rest of the search continues. An empty result still writes a center CSV, an empty PDB, and a residual map equal to the input, because nothing was subtracted.
+During the sequential fit, a seed that falls outside the map, that has too few finite voxels, or that has too few spherical shells is skipped with a message when `verbose` is true. The rest of the search continues. An empty result still writes a center CSV, an empty PDB, and a residual map equal to the input, because nothing was subtracted.

@@ -9,7 +9,7 @@ Centers are Cartesian ångströms in the map's orthogonal frame. Density, amplit
 
 ## Residual maps
 
-After the selected peaks have been fitted, both workflows write the input density minus those Gaussians. The joint shared background and the sequential local baselines stay in the map. Each Gaussian is removed inside a sphere of radius five times its longest principal width. Voxels outside every such sphere are unchanged. Non-finite samples are written as zero. The CCP4 grid, starts, axis order, and cell are copied from the input.
+After the selected peaks have been fitted, both workflows write the input density minus those Gaussians. The joint shared background and the sequential local baselines stay in the map. Each Gaussian is removed inside a sphere. With `subtraction_radius` unset, the radius is five times that Gaussian's longest principal width. A positive `subtraction_radius` is the same radius in Å for every component. Voxels outside every such sphere are unchanged. Non-finite samples are written as zero. The CCP4 grid, starts, axis order, and cell are copied from the input.
 
 The same array is written twice:
 
@@ -17,6 +17,10 @@ The same array is written twice:
 - `{prefix}_residual.map`, next to that workflow's other products. The other workflow does not replace this copy.
 
 An empty sequential search still writes both files, and they match the input. `synthetic: true` does not read a map and does not write a residual.
+
+## Gaussian maps
+
+Written only when `save_gaussians` is true. One CCP4 file per fitted Gaussian, named `{prefix}_gaussian01.map`, `{prefix}_gaussian02.map`, and so on. The number is the component order: the joint `component` column, and the row order of the sequential centers table. The array is that Gaussian alone on the input grid. The baseline is not included. Voxels outside the removal sphere are zero, and the header matches the input map. `synthetic: true` writes none.
 
 ## Joint fit
 
@@ -105,8 +109,10 @@ One row per accepted peak, in subtraction order. A skipped or non-positive fit d
 | `x_A`, `y_A`, `z_A` | Fitted center. Equal to the seed when `fix_centers` is true. |
 | `peak_before` | Residual density at the detected voxel before this fit. The threshold uses this value. |
 | `amplitude` | Fitted \(A\). |
-| `background` | Baseline of this peak only. It is not subtracted. |
-| `center_fixed`, `full_covariance` | The switches used. |
+| `background` | Baseline of this peak only. It is zero when `zero_baseline` is set. It is not subtracted. |
+| `zero_baseline` | Whether the baseline was held at zero. |
+| `center_fixed`, `full_covariance` | The switches used. For a spherical fit the center is held on the detected voxel and `full_covariance` is false. |
+| `method` | `isotropic`, `full_covariance`, or `spherical`. |
 | `spline_seed`, `spline_order`, `neighborhood_size` | How the seed was placed. `spline_order` is used when `spline_seed` is true. Orders below 2 leave the seed on the detected voxel. |
 | `R2`, `RMSE` | Fit quality inside that peak's sphere. |
 | `n_voxels` | Finite voxels in the sphere. |
@@ -151,6 +157,6 @@ Those filenames are set inside the notebooks and do not use `output_prefix`. The
 
 ## Return values
 
-The joint `run` returns a dictionary. A map run contains `comparison`, `components`, and `pairs` as DataFrames, plus `diagnostics`, `models_csv`, `centers_csv`, `centers_pdb`, `pairs_csv`, `residual_map`, `prefix_residual_map`, `roi_center`, and `background`. `residual_map` is the file beside the input. `prefix_residual_map` is `{prefix}_residual.map`. A synthetic run contains `synthetic` and `synthetic_csv` only.
+The joint `run` returns a dictionary. A map run contains `comparison`, `components`, and `pairs` as DataFrames, plus `diagnostics`, `models_csv`, `centers_csv`, `centers_pdb`, `pairs_csv`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, `roi_center`, and `background`. `residual_map` is the file beside the input. `prefix_residual_map` is `{prefix}_residual.map`. `gaussian_maps` is the list of `{prefix}_gaussianNN.map` paths, empty when `save_gaussians` is false. A synthetic run contains `synthetic` and `synthetic_csv` only.
 
-The sequential `run` returns the centers DataFrame. Paths are stored on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, and `diagnostics`. `residual_map` is the file beside the input and `prefix_residual_map` is `{prefix}_residual.map`. The diagnostics path is set even when the figure was not written because no peak was accepted.
+The sequential `run` returns the centers DataFrame. Paths are stored on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, and `diagnostics`. `residual_map` is the file beside the input and `prefix_residual_map` is `{prefix}_residual.map`. `gaussian_maps` is empty unless `save_gaussians` is true. The diagnostics path is set even when the figure was not written because no peak was accepted.

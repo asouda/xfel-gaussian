@@ -72,7 +72,9 @@ Fits the joint model and writes the [output files](outputs.md). Returns the dict
 
 `residual_map_path(map_path)` is the input path with `_residual` inserted before the suffix.
 
-`gaussian_residual(rho, axes, starts, sampling, orth, components, radius_factor=5.0)` returns the map minus each component's Gaussian. The shared background is not removed. Each component is subtracted inside `radius_factor` times `sigma_1_A`.
+`gaussian_residual(rho, axes, starts, sampling, orth, components, radius_factor=5.0, subtraction_radius=None)` returns the map minus each component's Gaussian. The shared background is not removed. Each component is subtracted inside `subtraction_radius` Å when that argument is set, and otherwise inside `radius_factor` times `sigma_1_A`.
+
+`one_gaussian_map(shape, axes, starts, sampling, orth, row, radius_factor=5.0, subtraction_radius=None)` returns one component on a zero grid, inside the removal sphere. `row` is one centers-table record.
 
 `write_map_like(source, values, destination)` writes `values` into a copy of the CCP4 header and grid at `source`. Non-finite samples become zero.
 
@@ -92,7 +94,9 @@ Holds the original grid, a residual copy, and the Cartesian mapping.
 
 - `to_cart(idx)` and `to_index(xyz)` convert stored indices and Cartesian Å.
 - `local(center, radius, values=None)` returns Cartesian coordinates, densities, and stored indices inside the sphere. `values` defaults to the residual.
-- `subtract(amp, center, sigma, radius_factor=5.0, cholesky=None)` removes a Gaussian from the residual inside `radius_factor * sigma`. A Cholesky factor selects the ellipsoidal form.
+- `subtract(amp, center, sigma, radius_factor=5.0, cholesky=None, radius=None)` removes a Gaussian from the residual. The sphere radius is `radius` in Å when it is set, and `radius_factor * sigma` otherwise. A Cholesky factor selects the ellipsoidal form.
+- `gaussian_values(amp, center, sigma, cholesky=None, radius=None, radius_factor=5.0)` returns that Gaussian on a zero copy of the grid, inside the removal sphere.
+- `save_array(path, values)` writes an array with this map's CCP4 header and then restores the grid.
 - `save_map(path)` writes the residual into the original CCP4 header and grid.
 
 `voxel_A3` is computed on the grid step and is not used by the fit.
@@ -107,9 +111,13 @@ Holds the original grid, a residual copy, and the Cartesian mapping.
 
 `gaussian(xyz, amp, center, sigma)` is the isotropic component without a background.
 
-`model_density(xyz, parameters, seed, fix_centers, full_covariance)` returns the predicted density, the center, and the Cholesky factor or `None` for an isotropic parameter vector.
+`model_density(xyz, parameters, seed, fix_centers, full_covariance, zero_baseline=False)` returns the predicted density, the center, and the Cholesky factor or `None` for an isotropic parameter vector. `zero_baseline` uses a baseline of zero instead of a last parameter.
 
-`fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300, fix_centers=False, full_covariance=False)` fits one sphere and returns a dictionary of shape descriptors plus `amp`, `xyz`, `sigma` (longest principal width), `bg`, `r2`, `rmse`, `n`, `success`, `n_at_bound`, `cholesky`, and `integrated_gaussian`.
+`fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300, fix_centers=False, full_covariance=False, zero_baseline=False)` fits one sphere by least squares and returns a dictionary of shape descriptors plus `amp`, `xyz`, `sigma` (longest principal width), `bg`, `r2`, `rmse`, `n`, `success`, `n_at_bound`, `cholesky`, and `integrated_gaussian`. `zero_baseline` holds `bg` at zero.
+
+`spherical_shells(center_index, indices, distances, values)` averages samples that share an index radius \(\Delta i^2+\Delta j^2+\Delta k^2\) about `center_index`. Each returned shell is the mean Cartesian distance, the mean value, and the count, in order of increasing distance.
+
+`fit_spherical_peak(dmap, seed, radius, sigma_bounds, zero_baseline=False)` builds those shells from the voxels inside `radius` of `seed` and fits one isotropic Gaussian plus a baseline to the shell means. `zero_baseline` holds the baseline at zero. The return dictionary matches `fit_peak`. The center is `seed`.
 
 `shape_record(cholesky)` is the covariance, width, and axis dictionary used to build that result. It includes `subtraction_sigma`, the longest principal width, which `fit_peak` then renames to `sigma`.
 
@@ -117,7 +125,7 @@ Holds the original grid, a residual copy, and the Cartesian mapping.
 
 ### `run(cfg, verbose=True)`
 
-Runs the subtraction loop and returns the centers DataFrame. Output paths are on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, and `diagnostics`. `residual_map` is the file beside the input.
+Runs the subtraction loop and returns the centers DataFrame. Output paths are on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, and `diagnostics`. `residual_map` is the file beside the input. `gaussian_maps` lists `{prefix}_gaussianNN.map` when `save_gaussians` is true, and is empty otherwise.
 
 `main(argv=None)` parses a single config-path argument and calls `run`.
 
@@ -136,10 +144,14 @@ Library defaults, before `config/peaks.yaml` overrides them:
 | `restarts` | `3` | `min_separation` | `0.7` |
 | `output_prefix` | `multi_mn` | `output_prefix` | `sequential_peaks` |
 | `synthetic` | `False` | `save_steps` | `False` |
+| `save_gaussians` | `False` | `save_gaussians` | `False` |
 | `fix_centers` | `False` | `fix_centers` | `False` |
 | `full_covariance` | `False` | `full_covariance` | `False` |
+| `subtraction_radius` | `None` | `subtraction_radius` | `None` |
+| | | `method` | `None` |
+| | | `zero_baseline` | `False` |
 | | | `neighborhood_size` | `3` |
 | | | `spline_seed` | `False` |
 | | | `spline_order` | `3` |
 
-The example `config/peaks.yaml` turns fixed centers and the full covariance on for both workflows, raises the joint component limit to 9, and turns sequential spline seeding on (`spline_seed: true`, order 3, neighborhood side 3). The file, not this table, is the configuration of a run.
+The example `config/peaks.yaml` turns fixed centers and the full covariance on for both workflows, sets sequential `method: full_covariance`, raises the joint component limit to 9, and turns sequential spline seeding on (`spline_seed: true`, order 3, neighborhood side 3). The file, not this table, is the configuration of a run. Sequential `method` may be `isotropic`, `full_covariance`, or `spherical`. `None` follows the `full_covariance` boolean.

@@ -46,6 +46,8 @@ DEFAULTS = dict(
     synthetic=False,
     fix_centers=False,
     full_covariance=False,
+    subtraction_radius=None,
+    save_gaussians=False,
 )
 
 
@@ -87,6 +89,18 @@ def _resolve_path(cfg, value):
     return path.resolve()
 
 
+def _as_optional_positive(value, key):
+    """A radius in Å, or None when the caller should use five principal widths."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+        raise ValueError(f'{key} must be a positive radius in Å, or null, got {value!r}')
+    number = float(value)
+    if not np.isfinite(number) or number <= 0:
+        raise ValueError(f'{key} must be a positive radius in Å, or null')
+    return number
+
+
 def _as_bool(value, key):
     if isinstance(value, bool):
         return value
@@ -111,6 +125,8 @@ def resolve_config(cfg):
     resolved['fix_centers'] = _as_bool(resolved['fix_centers'], 'fix_centers')
     resolved['full_covariance'] = _as_bool(resolved['full_covariance'], 'full_covariance')
     resolved['synthetic'] = _as_bool(resolved['synthetic'], 'synthetic')
+    resolved['save_gaussians'] = _as_bool(resolved['save_gaussians'], 'save_gaussians')
+    resolved['subtraction_radius'] = _as_optional_positive(resolved['subtraction_radius'], 'subtraction_radius')
     if resolved['min_width'] <= 0 or resolved['max_width'] <= resolved['min_width']:
         raise ValueError('min_width and max_width must satisfy 0 < min_width < max_width')
     if resolved['radius'] <= 0 or resolved['max_components'] < 1 or resolved['restarts'] < 1:
@@ -493,11 +509,13 @@ def _map_frame(axes, starts, sampling, orth):
     return origin, np.linalg.inv(step)
 
 
-def gaussian_residual(rho, axes, starts, sampling, orth, components, radius_factor=5.0):
+def gaussian_residual(rho, axes, starts, sampling, orth, components, radius_factor=5.0,
+                      subtraction_radius=None):
     """Input density minus each fitted Gaussian, leaving the shared background in place.
 
-    Each Gaussian is removed inside a sphere of radius ``radius_factor`` times its
-    longest principal width. Voxels outside those spheres are unchanged.
+    Each Gaussian is removed inside a sphere. The radius is ``subtraction_radius``
+    in Å when that value is set, and otherwise ``radius_factor`` times the
+    component's longest principal width. Voxels outside those spheres are unchanged.
     """
     residual = np.array(rho, dtype=np.float64, copy=True)
     if components is None or len(components) == 0:
@@ -510,7 +528,10 @@ def gaussian_residual(rho, axes, starts, sampling, orth, components, radius_fact
             [row.L10, row.L11, 0.0],
             [row.L20, row.L21, row.L22],
         ], dtype=float)
-        radius = radius_factor * float(row.sigma_1_A)
+        if subtraction_radius is None:
+            radius = radius_factor * float(row.sigma_1_A)
+        else:
+            radius = float(subtraction_radius)
         if not np.isfinite(radius) or radius <= 0 or not np.isfinite(row.amplitude):
             continue
         index = (center - origin) @ invstep.T
@@ -529,6 +550,40 @@ def gaussian_residual(rho, axes, starts, sampling, orth, components, radius_fact
         removed = float(row.amplitude) * np.exp(-0.5 * mahalanobis2(xyz, center, cholesky))
         residual[tuple(idx.T)] -= removed
     return residual
+
+
+def one_gaussian_map(shape, axes, starts, sampling, orth, row, radius_factor=5.0,
+                     subtraction_radius=None):
+    """One fitted Gaussian on a zero grid, inside the same sphere used for removal."""
+    values = np.zeros(shape, dtype=np.float64)
+    center = np.array([row.x_A, row.y_A, row.z_A], dtype=float)
+    cholesky = np.array([
+        [row.L00, 0.0, 0.0],
+        [row.L10, row.L11, 0.0],
+        [row.L20, row.L21, row.L22],
+    ], dtype=float)
+    if subtraction_radius is None:
+        radius = radius_factor * float(row.sigma_1_A)
+    else:
+        radius = float(subtraction_radius)
+    if not np.isfinite(radius) or radius <= 0 or not np.isfinite(row.amplitude):
+        return values
+    origin, invstep = _map_frame(axes, starts, sampling, orth)
+    index = (center - origin) @ invstep.T
+    reach = radius * np.linalg.norm(invstep, axis=1) + 2
+    lo = np.maximum(0, np.floor(index - reach).astype(int))
+    hi = np.minimum(shape, np.ceil(index + reach).astype(int) + 1)
+    if np.any(lo >= hi):
+        return values
+    idx = np.indices(tuple(int(b - a) for a, b in zip(lo, hi))).reshape(3, -1).T + lo
+    xyz = to_cart(idx, axes, starts, sampling, orth)
+    keep = np.linalg.norm(xyz - center, axis=1) <= radius
+    if not np.any(keep):
+        return values
+    idx = idx[keep]
+    xyz = xyz[keep]
+    values[tuple(idx.T)] = float(row.amplitude) * np.exp(-0.5 * mahalanobis2(xyz, center, cholesky))
+    return values
 
 
 def write_map_like(source, values, destination):
@@ -607,9 +662,25 @@ def run(cfg, verbose=True):
     plot_fit(xyz, y, comps, fit, diagnostics)
     prefix_residual = str(prefix) + '_residual.map'
     residual_map = residual_map_path(cfg['map'])
-    residual = gaussian_residual(rho, axes, starts, sampling, orth, comps)
+    residual = gaussian_residual(
+        rho, axes, starts, sampling, orth, comps,
+        subtraction_radius=cfg['subtraction_radius'],
+    )
     write_map_like(cfg['map'], residual, prefix_residual)
     write_map_like(cfg['map'], residual, residual_map)
+    gaussian_maps = []
+    if cfg['save_gaussians']:
+        for row in comps.itertuples(index=False):
+            gaussian_path = f'{prefix}_gaussian{int(row.component):02d}.map'
+            write_map_like(
+                cfg['map'],
+                one_gaussian_map(
+                    rho.shape, axes, starts, sampling, orth, row,
+                    subtraction_radius=cfg['subtraction_radius'],
+                ),
+                gaussian_path,
+            )
+            gaussian_maps.append(gaussian_path)
     if verbose:
         print('\nModel comparison:\n', comparison.to_string(index=False))
         print('\nBIC-selected centers (Cartesian Å):\n', comps.to_string(index=False))
@@ -617,6 +688,8 @@ def run(cfg, verbose=True):
         print('\nNote: K, BIC, and covariance SE do not alone prove physical resolvability.')
         print(f'Centers PDB: {centers_pdb}')
         print(f'Residual maps: {prefix_residual} and {residual_map}')
+        if gaussian_maps:
+            print('Gaussian maps: ' + ', '.join(gaussian_maps))
     return {
         'comparison': comparison,
         'components': comps,
@@ -628,6 +701,7 @@ def run(cfg, verbose=True):
         'pairs_csv': str(prefix) + '_pairs.csv',
         'residual_map': str(residual_map),
         'prefix_residual_map': prefix_residual,
+        'gaussian_maps': gaussian_maps,
         'roi_center': np.asarray(center, dtype=float),
         'background': float(fit.x[-1]),
     }

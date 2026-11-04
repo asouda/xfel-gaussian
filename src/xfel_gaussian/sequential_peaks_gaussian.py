@@ -6,13 +6,17 @@ Usage:
     python -m xfel_gaussian.sequential_peaks_gaussian config/peaks.yaml
 
 Read CCP4 without altering its extent, orientation, or origin. At the highest
-remaining local maximum, fit a local 3D Gaussian plus a constant baseline.
-The Gaussian is isotropic or a fully rotated ellipsoid. Its center is either
-refined or held at the seed. By default the seed is the detected voxel. It
-can instead be the maximum of a spline interpolant inside that voxel's
-neighborhood. Subtract only the Gaussian (not the local baseline) from the
-sampled map, then repeat. The finished residual is written beside the input
-map, with ``_residual`` before the suffix, and again at ``{prefix}_residual.map``.
+remaining local maximum, fit one positive Gaussian plus a constant baseline.
+``zero_baseline`` holds that baseline at zero instead of fitting it.
+The Gaussian is a least-squares isotropic width, a least-squares rotated
+ellipsoid, or the Gaussian of a spherical shell average about the detected
+voxel. Its center is either refined or held at the seed. By default the seed
+is the detected voxel. It can instead be the maximum of a spline interpolant
+inside that voxel's neighborhood. The spherical fit does not use that
+interpolant: the average is centered on the voxel. Subtract only the Gaussian
+(not the local baseline) from the sampled map, then repeat. The finished
+residual is written beside the input map, with ``_residual`` before the
+suffix, and again at ``{prefix}_residual.map``.
 
 The YAML file may be a flat mapping or a combined file with a
 ``sequential_peaks`` section and a shared ``map`` entry. See config/peaks.yaml.
@@ -36,6 +40,7 @@ if __name__ == '__main__':
 import matplotlib.pyplot as plt
 
 FWHM_FACTOR = 2 * np.sqrt(2 * np.log(2))
+METHODS = ('isotropic', 'full_covariance', 'spherical')
 
 DEFAULTS = dict(
     output_prefix='sequential_peaks',
@@ -47,11 +52,15 @@ DEFAULTS = dict(
     max_shift=1.2,
     min_separation=0.7,
     save_steps=False,
+    save_gaussians=False,
     fix_centers=False,
     full_covariance=False,
+    method=None,
+    zero_baseline=False,
     neighborhood_size=3,
     spline_seed=False,
     spline_order=3,
+    subtraction_radius=None,
 )
 
 
@@ -100,6 +109,33 @@ def _as_bool(value, key):
     raise ValueError(f'{key} must be a boolean, got {value!r}')
 
 
+def _as_optional_positive(value, key):
+    """A radius in Å, or None when the caller should use five principal widths."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+        raise ValueError(f'{key} must be a positive radius in Å, or null, got {value!r}')
+    number = float(value)
+    if not np.isfinite(number) or number <= 0:
+        raise ValueError(f'{key} must be a positive radius in Å, or null')
+    return number
+
+
+def _as_method(value):
+    if not isinstance(value, str):
+        raise ValueError(
+            "method must be 'isotropic', 'full_covariance', or 'spherical', "
+            f'got {value!r}'
+        )
+    method = value.strip().lower()
+    if method not in METHODS:
+        raise ValueError(
+            "method must be 'isotropic', 'full_covariance', or 'spherical', "
+            f'got {value!r}'
+        )
+    return method
+
+
 def _as_int(value, key):
     if isinstance(value, bool):
         raise ValueError(f'{key} must be an integer, got {value!r}')
@@ -128,8 +164,20 @@ def resolve_config(cfg):
     if not Path(resolved['map']).is_file():
         raise FileNotFoundError(resolved['map'])
     resolved['output_prefix'] = str(_resolve_path(resolved, resolved['output_prefix']))
-    for key in ('save_steps', 'fix_centers', 'full_covariance', 'spline_seed'):
+    for key in ('save_steps', 'save_gaussians', 'fix_centers', 'full_covariance', 'spline_seed', 'zero_baseline'):
         resolved[key] = _as_bool(resolved[key], key)
+    if resolved.get('method') is None:
+        resolved['method'] = 'full_covariance' if resolved['full_covariance'] else 'isotropic'
+    else:
+        resolved['method'] = _as_method(resolved['method'])
+        # method is the sequential shape. The boolean remains for older files
+        # that do not set method, and it is kept consistent for the CSV.
+        resolved['full_covariance'] = resolved['method'] == 'full_covariance'
+    if resolved['method'] == 'spherical':
+        # The shell average is centered on a grid point, so the seed stays on
+        # the detected voxel and the Gaussian is not moved off it.
+        resolved['spline_seed'] = False
+        resolved['fix_centers'] = True
     resolved['neighborhood_size'] = _as_int(resolved['neighborhood_size'], 'neighborhood_size')
     resolved['spline_order'] = _as_int(resolved['spline_order'], 'spline_order')
     if resolved['neighborhood_size'] < 1 or resolved['neighborhood_size'] % 2 == 0:
@@ -140,6 +188,7 @@ def resolve_config(cfg):
         raise ValueError('Invalid fitting radius or width bounds')
     if resolved['n_peaks'] < 1:
         raise ValueError('n_peaks must be positive')
+    resolved['subtraction_radius'] = _as_optional_positive(resolved['subtraction_radius'], 'subtraction_radius')
     return resolved
 
 
@@ -185,14 +234,38 @@ class DensityMap:
         keep = (np.linalg.norm(xyz - center, axis=1) <= radius) & np.isfinite(y)
         return xyz[keep], y[keep], idx[keep]
 
-    def subtract(self, amp, center, sigma, radius_factor=5.0, cholesky=None):
+    def subtract(self, amp, center, sigma, radius_factor=5.0, cholesky=None, radius=None):
         # Update a compact region. sigma is the longest principal width.
-        xyz, _, idx = self.local(center, radius_factor * float(sigma))
+        # radius, in Å, replaces radius_factor * sigma when it is set.
+        sphere = radius_factor * float(sigma) if radius is None else float(radius)
+        xyz, _, idx = self.local(center, sphere)
         if cholesky is None:
             component = gaussian(xyz, amp, center, sigma)
         else:
             component = amp * np.exp(-0.5 * mahalanobis2(xyz, center, cholesky))
         self.residual[tuple(idx.T)] -= component
+
+    def gaussian_values(self, amp, center, sigma, cholesky=None, radius=None, radius_factor=5.0):
+        """Fitted Gaussian on the input grid. Voxels outside the removal sphere stay zero."""
+        sphere = radius_factor * float(sigma) if radius is None else float(radius)
+        _, _, idx = self.local(center, sphere, values=self.original)
+        values = np.zeros(self.original.shape, dtype=np.float64)
+        if len(idx) == 0:
+            return values
+        xyz = self.to_cart(idx)
+        if cholesky is None:
+            values[tuple(idx.T)] = gaussian(xyz, amp, center, sigma)
+        else:
+            values[tuple(idx.T)] = amp * np.exp(-0.5 * mahalanobis2(xyz, center, cholesky))
+        return values
+
+    def save_array(self, path, values):
+        """Write an array with this map's CCP4 header, then restore the grid."""
+        stored = np.array(self.ccp4.grid, copy=True)
+        grid = np.array(self.ccp4.grid, copy=False)
+        grid[:] = np.where(np.isfinite(values), values, 0).astype(np.float32)
+        self.ccp4.write_ccp4_map(str(path))
+        grid[:] = stored
 
     def save_map(self, path):
         # Preserve the CCP4 extent, starts, axes, and crystallographic frame.
@@ -261,8 +334,11 @@ def shape_record(cholesky):
     return record
 
 
-def model_density(xyz, parameters, seed, fix_centers, full_covariance):
-    """Evaluate one Gaussian. Returns density, center, and Cholesky factor or None."""
+def model_density(xyz, parameters, seed, fix_centers, full_covariance, zero_baseline=False):
+    """Evaluate one Gaussian. Returns density, center, and Cholesky factor or None.
+
+    The baseline is the last parameter, or zero when ``zero_baseline`` is set.
+    """
     amplitude = parameters[0]
     cursor = 1
     if fix_centers:
@@ -279,7 +355,8 @@ def model_density(xyz, parameters, seed, fix_centers, full_covariance):
         cursor += 1
         factor = None
         signal = gaussian(xyz, amplitude, center, width)
-    return signal + parameters[cursor], center, factor
+    background = 0.0 if zero_baseline else parameters[cursor]
+    return signal + background, center, factor
 
 
 def robust_noise(y):
@@ -383,13 +460,16 @@ def spline_maximum_index(rho, idx, neighborhood_size, spline_order):
 
 
 def fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300,
-             fix_centers=False, full_covariance=False):
+             fix_centers=False, full_covariance=False, zero_baseline=False):
     xyz, y, _ = dmap.local(seed, radius)
     if len(y) < 35:
         raise RuntimeError('Insufficient local valid voxels')
     seed = np.asarray(seed, dtype=float)
-    bg = float(np.quantile(y, .2))
-    amp = max(float(np.max(y) - bg), 1e-3)
+    if zero_baseline:
+        amp = max(float(np.max(y)), 1e-3)
+    else:
+        bg = float(np.quantile(y, .2))
+        amp = max(float(np.max(y) - bg), 1e-3)
     smin, smax = sigma_bounds
     s0 = float(np.clip(radius / 3, smin, smax))
     initial = [amp]
@@ -407,21 +487,26 @@ def fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300,
         initial.append(s0)
         lower.append(smin)
         upper.append(smax)
-    initial.append(bg)
-    lower.append(float(np.min(y) - np.ptp(y) - 1.))
-    upper.append(float(np.max(y) + np.ptp(y) + 1.))
+    if not zero_baseline:
+        initial.append(bg)
+        lower.append(float(np.min(y) - np.ptp(y) - 1.))
+        upper.append(float(np.max(y) + np.ptp(y) + 1.))
     lower = np.asarray(lower, dtype=float)
     upper = np.asarray(upper, dtype=float)
     initial = np.clip(np.asarray(initial, dtype=float), lower + 1e-8, upper - 1e-8)
     nfev = max(max_nfev, 900) if full_covariance else max_nfev
 
     def predicted(parameters):
-        values, _, _ = model_density(xyz, parameters, seed, fix_centers, full_covariance)
+        values, _, _ = model_density(
+            xyz, parameters, seed, fix_centers, full_covariance, zero_baseline,
+        )
         return values
 
     res = least_squares(lambda p: predicted(p) - y, initial, bounds=(lower, upper),
                         method='trf', loss='linear', x_scale='jac', max_nfev=nfev)
-    values, center, factor = model_density(xyz, res.x, seed, fix_centers, full_covariance)
+    values, center, factor = model_density(
+        xyz, res.x, seed, fix_centers, full_covariance, zero_baseline,
+    )
     if factor is None:
         width = res.x[1 if fix_centers else 4]
         factor = np.diag([width, width, width])
@@ -433,7 +518,7 @@ def fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300,
         amp=float(res.x[0]),
         xyz=np.asarray(center, dtype=float),
         sigma=shape.pop('subtraction_sigma'),
-        bg=float(res.x[-1]),
+        bg=0.0 if zero_baseline else float(res.x[-1]),
         r2=float(r2),
         rmse=float(np.sqrt(rss / len(y))),
         n=int(len(y)),
@@ -441,6 +526,159 @@ def fit_peak(dmap, seed, radius, sigma_bounds, shift_limit, max_nfev=300,
         n_at_bound=int(np.count_nonzero(res.active_mask)),
         cholesky=factor,
         integrated_gaussian=float(res.x[0] * (2 * np.pi) ** 1.5 * shape.pop('integrated_scale')),
+    ))
+    return shape
+
+
+def spherical_shells(center_index, indices, distances, values):
+    """Average ``values`` over lattice shells about ``center_index``.
+
+    A shell is every voxel with the same index radius, the sum of the squared
+    index offsets from the center. Face neighbors share one shell
+    even when the three voxel edges differ by a fraction of a step, and the
+    next lattice shell stays separate. The shell radius is the mean of
+    ``distances``. Shells are returned in increasing radius. The center voxel
+    is the shell at zero when it is present.
+    """
+    center_index = np.rint(np.asarray(center_index, dtype=float)).astype(np.int64)
+    indices = np.asarray(indices)
+    distances = np.asarray(distances, dtype=float)
+    values = np.asarray(values, dtype=float)
+    if indices.ndim != 2 or indices.shape[1] != 3:
+        raise ValueError('indices must have shape (n, 3)')
+    if not (len(indices) == len(distances) == len(values)):
+        raise ValueError('indices, distances, and values must have the same length')
+    if len(values) == 0:
+        empty = np.empty(0)
+        return empty, empty, np.empty(0, dtype=int)
+    delta = np.rint(indices).astype(np.int64) - center_index
+    key = np.sum(delta * delta, axis=1)
+    order = np.argsort(key, kind='mergesort')
+    key = key[order]
+    distances = distances[order]
+    values = values[order]
+    shell_r = []
+    shell_y = []
+    shell_n = []
+    start = 0
+    n = len(key)
+    for i in range(1, n + 1):
+        if i == n or key[i] != key[start]:
+            shell_r.append(float(np.mean(distances[start:i])))
+            shell_y.append(float(np.mean(values[start:i])))
+            shell_n.append(int(i - start))
+            start = i
+    shell_r = np.asarray(shell_r)
+    shell_y = np.asarray(shell_y)
+    shell_n = np.asarray(shell_n, dtype=int)
+    order = np.argsort(shell_r, kind='mergesort')
+    return shell_r[order], shell_y[order], shell_n[order]
+
+
+def _curvature_width(shell_r, shell_y, sigma_bounds):
+    """Width of a zero-baseline Gaussian from the center and the first shell.
+
+    With baseline 0 and amplitude equal to the center density,
+    ρ(r) = A exp(-r²/(2σ²)) has central curvature ρ''(0) = -A/σ² and inverts
+    on the first shell to σ = r / sqrt(2 ln(ρ(0)/ρ(r))). The shell fit uses
+    this as its starting width and then adjusts amplitude, baseline, and width
+    together. A second derivative by itself determines only A/σ².
+    """
+    smin, smax = sigma_bounds
+    fallback = float(np.clip(0.5 * (smin + smax), smin, smax))
+    if len(shell_r) < 2:
+        return fallback
+    radius = float(shell_r[1])
+    center = float(shell_y[0])
+    neighbor = float(shell_y[1])
+    if radius <= 0 or center <= 0 or neighbor <= 0 or neighbor >= center:
+        return fallback
+    sigma = radius / np.sqrt(2.0 * np.log(center / neighbor))
+    if not np.isfinite(sigma):
+        return fallback
+    return float(np.clip(sigma, smin, smax))
+
+
+def fit_spherical_peak(dmap, seed, radius, sigma_bounds, zero_baseline=False):
+    """Isotropic Gaussian of the spherical average about a detected voxel.
+
+    Voxels inside ``radius`` of ``seed`` are averaged on lattice shells about
+    that voxel. The shell profile is the symmetrical peak. One baseline plus
+    one Gaussian is fit to the shells, with one weight per shell, so each
+    radius counts once. The initial width is the central-curvature width of
+    the center and the first shell. The accepted width is the least-squares
+    width of the profile, bounded by ``sigma_bounds``. ``zero_baseline``
+    holds the baseline at zero. The center stays at ``seed``. The returned
+    dictionary matches ``fit_peak``. ``r2`` and ``rmse`` are scored on the
+    voxels in the sphere.
+    """
+    xyz, y, idx = dmap.local(seed, radius)
+    if len(y) < 3:
+        raise RuntimeError('Insufficient local valid voxels')
+    seed = np.asarray(seed, dtype=float)
+    center_index = np.rint(dmap.to_index(seed)).astype(np.int64)
+    if not np.any(np.all(np.rint(idx).astype(np.int64) == center_index, axis=1)):
+        raise RuntimeError('No voxel at the spherical-fit center')
+    distances = np.linalg.norm(xyz - seed, axis=1)
+    shell_r, shell_y, _ = spherical_shells(center_index, idx, distances, y)
+    if len(shell_r) < 3:
+        raise RuntimeError('Fewer than three spherical shells inside fit_radius')
+    if shell_r[0] > 1e-6:
+        raise RuntimeError('No voxel at the spherical-fit center')
+    smin, smax = sigma_bounds
+    sigma0 = _curvature_width(shell_r, shell_y, sigma_bounds)
+    amplitude0 = max(float(shell_y[0]), 1e-3)
+    lower = [0.0, smin]
+    upper = [max(10.0 * amplitude0, 1.0), smax]
+    initial = [amplitude0, sigma0]
+    if not zero_baseline:
+        # A short window can lie entirely on the peak, so the baseline may
+        # sit below every sample in the sphere.
+        span = float(np.ptp(y))
+        low = float(np.min(y))
+        high = float(np.max(y))
+        lower.append(min(low - span - 1.0, -abs(high) - 1.0))
+        upper.append(high + span + 1.0)
+        initial.append(0.0)
+    lower = np.asarray(lower, dtype=float)
+    upper = np.asarray(upper, dtype=float)
+    if np.any(upper <= lower):
+        raise RuntimeError('Empty bounds for the spherical fit')
+    initial = np.clip(np.asarray(initial, dtype=float), lower + 1e-8, upper - 1e-8)
+
+    def residual(parameters):
+        amplitude, sigma = parameters[0], parameters[1]
+        background = 0.0 if zero_baseline else parameters[2]
+        model = background + amplitude * np.exp(-0.5 * (shell_r / sigma) ** 2)
+        return model - shell_y
+
+    result = least_squares(
+        residual, initial, bounds=(lower, upper),
+        method='trf', loss='linear', x_scale='jac', max_nfev=300,
+    )
+    amplitude = float(result.x[0])
+    sigma = float(result.x[1])
+    background = 0.0 if zero_baseline else float(result.x[2])
+    factor = np.diag([sigma, sigma, sigma])
+    shape = shape_record(factor)
+    predicted = background + gaussian(xyz, amplitude, seed, sigma)
+    error = predicted - y
+    rss = float(np.dot(error, error))
+    centered = y - float(y.mean())
+    tot = float(np.dot(centered, centered))
+    r2 = 1.0 - rss / tot if tot > 0 else float('nan')
+    shape.update(dict(
+        amp=amplitude,
+        xyz=seed.copy(),
+        sigma=shape.pop('subtraction_sigma'),
+        bg=background,
+        r2=float(r2),
+        rmse=float(np.sqrt(rss / max(len(y), 1))),
+        n=int(len(y)),
+        success=bool(result.success),
+        n_at_bound=int(np.count_nonzero(result.active_mask)),
+        cholesky=factor,
+        integrated_gaussian=float(amplitude * (2 * np.pi) ** 1.5 * shape.pop('integrated_scale')),
     ))
     return shape
 
@@ -484,10 +722,15 @@ def run(cfg, verbose=True):
     threshold = cfg['threshold_sigma'] * reference_noise
     excluded = np.zeros(dm.original.shape, bool)
     history = []
+    gaussian_maps = []
     if cfg['save_steps']:
         dm.save_map(f'{prefix}_step00.map')
     if verbose:
-        mode = 'full covariance' if cfg['full_covariance'] else 'isotropic'
+        mode = {
+            'full_covariance': 'full covariance',
+            'isotropic': 'isotropic',
+            'spherical': 'spherical shell average',
+        }[cfg['method']]
         side = cfg['neighborhood_size']
         if cfg['spline_seed']:
             placed = (f'a spline maximum of order {cfg["spline_order"]} '
@@ -497,7 +740,8 @@ def run(cfg, verbose=True):
         where = f'fixed at {placed}' if cfg['fix_centers'] else f'refined from {placed}'
         print(f'Grid: {dm.original.shape}; robust map sigma={reference_noise:.5g}; '
               f'positive peak threshold={threshold:.5g}')
-        print(f'Model: {mode}; centers {where}')
+        baseline = 'baseline fixed at 0' if cfg['zero_baseline'] else 'baseline fit at each peak'
+        print(f'Model: {mode}; centers {where}; {baseline}')
     for k in range(1, cfg['n_peaks'] + 1):
         peak = choose_peak(dm.residual, valid, excluded, cfg['neighborhood_size'])
         if peak is None:
@@ -514,10 +758,17 @@ def run(cfg, verbose=True):
             )
         seed = dm.to_cart(seed_index)
         try:
-            fitted = fit_peak(
-                dm, seed, cfg['fit_radius'], (cfg['sigma_min'], cfg['sigma_max']), cfg['max_shift'],
-                fix_centers=cfg['fix_centers'], full_covariance=cfg['full_covariance'],
-            )
+            if cfg['method'] == 'spherical':
+                fitted = fit_spherical_peak(
+                    dm, seed, cfg['fit_radius'], (cfg['sigma_min'], cfg['sigma_max']),
+                    zero_baseline=cfg['zero_baseline'],
+                )
+            else:
+                fitted = fit_peak(
+                    dm, seed, cfg['fit_radius'], (cfg['sigma_min'], cfg['sigma_max']), cfg['max_shift'],
+                    fix_centers=cfg['fix_centers'], full_covariance=cfg['full_covariance'],
+                    zero_baseline=cfg['zero_baseline'],
+                )
         except (RuntimeError, ValueError) as exc:
             if verbose:
                 print(f'Skipping seed {idx.tolist()}: {exc}')
@@ -525,13 +776,17 @@ def run(cfg, verbose=True):
         if fitted is not None and fitted['success'] and fitted['amp'] > 0:
             center = fitted['xyz']
             # Gaussian subtraction only; retaining local background prevents map-wide drift.
-            dm.subtract(fitted['amp'], center, fitted['sigma'], cholesky=fitted['cholesky'])
+            dm.subtract(
+                fitted['amp'], center, fitted['sigma'],
+                cholesky=fitted['cholesky'], radius=cfg['subtraction_radius'],
+            )
             row = dict(
                 iteration=k,
                 seed_x_A=float(seed[0]), seed_y_A=float(seed[1]), seed_z_A=float(seed[2]),
                 x_A=float(center[0]), y_A=float(center[1]), z_A=float(center[2]),
                 peak_before=height, amplitude=fitted['amp'], background=fitted['bg'],
                 center_fixed=bool(cfg['fix_centers']), full_covariance=bool(cfg['full_covariance']),
+                method=cfg['method'], zero_baseline=bool(cfg['zero_baseline']),
                 spline_seed=bool(cfg['spline_seed']), spline_order=int(cfg['spline_order']),
                 neighborhood_size=int(cfg['neighborhood_size']),
                 R2=fitted['r2'], RMSE=fitted['rmse'], n_voxels=fitted['n'],
@@ -544,6 +799,16 @@ def run(cfg, verbose=True):
                     continue
                 row[key] = value
             history.append(row)
+            if cfg['save_gaussians']:
+                gaussian_path = f'{prefix}_gaussian{len(history):02d}.map'
+                dm.save_array(
+                    gaussian_path,
+                    dm.gaussian_values(
+                        fitted['amp'], center, fitted['sigma'],
+                        cholesky=fitted['cholesky'], radius=cfg['subtraction_radius'],
+                    ),
+                )
+                gaussian_maps.append(gaussian_path)
             if verbose:
                 print(f'#{k}: center=({center[0]:.3f}, {center[1]:.3f}, {center[2]:.3f}) Å '
                       f'amp={fitted["amp"]:.3f}, principal σ='
@@ -578,10 +843,13 @@ def run(cfg, verbose=True):
         plt.close(fig)
     if verbose:
         print(f'Saved {len(df)} components; results: {centers_csv}, {centers_pdb}, {prefix_residual}, and {residual_map}')
+        if gaussian_maps:
+            print('Gaussian maps: ' + ', '.join(gaussian_maps))
     df.attrs['centers_csv'] = centers_csv
     df.attrs['centers_pdb'] = centers_pdb
     df.attrs['residual_map'] = str(residual_map)
     df.attrs['prefix_residual_map'] = prefix_residual
+    df.attrs['gaussian_maps'] = gaussian_maps
     df.attrs['diagnostics'] = diagnostics
     return df
 

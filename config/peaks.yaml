@@ -2,7 +2,7 @@
 # Paths are relative to this file.
 
 #map: ../data/9z35_omitOEC_withCa_BGLU189_extended_10A.map
-map: ../data/9z35_refmac3C_FoFc_OECA.mrc
+map: ../data/new_res_0_2.map
 
 multi_peaks:
     output_prefix: ../results/9z35_omitOEC_withCa_BGLU189_multi_peaks_fixed
@@ -16,19 +16,24 @@ multi_peaks:
     synthetic: false          # Use a synthetic map for testing.
     fix_centers: true         # Hold each center on the detected local maximum instead of refining it.
     full_covariance: true     # Full 3x3 covariance: a rotated ellipsoid. False keeps an isotropic width.
+    subtraction_radius: null  # Radius in Å inside which each fitted Gaussian is removed. Null uses five times that Gaussian's longest principal width.
+    save_gaussians: false     # Write one CCP4 map per fitted Gaussian, named {prefix}_gaussian01.map and so on.
 
 sequential_peaks:
-    output_prefix: ../results/9z35_omitOEC_withCa_BGLU189_sequential_peaks_fixed
+    output_prefix: ../results/newtest_zero_baseline_9peaks_hires_0_2
     n_peaks: 9                # Maximum number of peaks to find.
-    threshold_sigma: 2.0      # Stop when the strongest remaining peak is below this multiple of the robust scale of the original map.
-    fit_radius: 1.4          # Radius of the Gaussian fit.
-    sigma_min: 0.1           # Minimum width of the Gaussian fit.
-    sigma_max: 2.5            # Maximum width of the Gaussian fit.
+    threshold_sigma: 1.5      # Stop when the strongest remaining peak is below this multiple of the robust scale of the original map.
+    fit_radius: 1.25          # Radius of the Gaussian fit.
+    sigma_min: 0.1            # Minimum width of the Gaussian fit.
+    sigma_max: 2.0            # Maximum width of the Gaussian fit.
     max_shift: 1.2            # When fix_centers is false: maximum center shift from the seed, in Å.
-    min_separation: 0.7       # Radius in Å of the exclusion sphere around a seed after each attempt.
+    min_separation: 1.25      # Radius in Å of the exclusion sphere around a seed after each attempt.
     save_steps: false         # Save the steps of the algorithm to a file.
     fix_centers: true         # Hold each center on the seed instead of refining it.
-    full_covariance: true     # Full 3x3 covariance: a rotated ellipsoid. False keeps an isotropic width.
+    method: isotropic         # full_covariance, isotropic, or spherical. When set, this selects the fitter and full_covariance is not read.
+    zero_baseline: true       # Hold each Gaussian baseline at zero. False fits a baseline at every peak.
     neighborhood_size: 3      # Odd side length of the index neighborhood around a local maximum. 3 means 3x3x3.
-    spline_seed: true        # Place the seed at the maximum of a spline interpolant of that neighborhood.
+    spline_seed: true         # Place the seed at the maximum of a spline interpolant of that neighborhood.
     spline_order: 3           # Order of that spline when spline_seed is true. 3 is cubic. Allowed values are 0 through 5.
+    subtraction_radius: null  # Radius in Å inside which each fitted Gaussian is removed. Null uses five times that Gaussian's longest principal width.
+    save_gaussians: true      # Write one CCP4 map per fitted Gaussian, named {prefix}_gaussian01.map and so on.

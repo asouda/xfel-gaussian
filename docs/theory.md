@@ -64,7 +64,7 @@ The library's default shape is one width \(\sigma_j > 0\):
   = \frac{\lVert \mathbf r - \mathbf r_j \rVert^2}{\sigma_j^2}.
 \]
 
-The joint model uses one background for the whole sum. A sequential step uses \(K = 1\) and its own background. In either case the isotropic width is bounded to the configured interval, `[min_width, max_width]` or `[sigma_min, sigma_max]`.
+The joint model uses one background for the whole sum. A sequential step uses \(K = 1\) and its own background. `zero_baseline` holds that background at zero, so it is not a parameter. In either case the isotropic width is bounded to the configured interval, `[min_width, max_width]` or `[sigma_min, sigma_max]`.
 
 ### Axis-aligned anisotropic component
 
@@ -252,7 +252,7 @@ The fit uses voxels inside a sphere about the current seed. After a successful f
 \rho_{k+1}(\mathbf r) = \rho_k(\mathbf r) - A_k \exp(\cdots)
 \]
 
-inside a sphere of radius five times the longest principal width. The baseline \(b_k\) is not removed. Each local baseline would otherwise be subtracted again at the next site and walk the residual downward across the map.
+inside a sphere whose radius is `subtraction_radius` in Å, or five times the longest principal width when that key is `null`. The same rule is used when the joint fit writes its residual map. The baseline \(b_k\) is not removed. Each local baseline would otherwise be subtracted again at the next site and walk the residual downward across the map.
 
 This is a matching-pursuit style of decomposition. It is cheaper than a joint fit over the whole map, and it lets a strong peak reveal a weaker neighbor. The price is order dependence. A broad feature can be carved into several Gaussians. A weak peak under a strong one is invisible until the strong one is removed, and it is never seen if the strong fit absorbed it. Joint refinement of all accepted centers is not a later step.
 
@@ -279,6 +279,28 @@ When `spline_seed` is true, \(s\) is a tensor-product spline of order `spline_or
 \]
 
 with \(\mathbf q\) restricted to the index box of that neighborhood. Order 3 is cubic. Orders 0 and 1 attain the maximum at the detected voxel. The threshold still uses the residual sample at that voxel.
+
+### Spherical shell
+
+`method: spherical` does not run the voxel least squares. The detected voxel is the center. Spline seeding is off, because the average has to be centered on a grid point, and the center is not refined.
+
+Voxels inside `fit_radius` are grouped into lattice shells about that voxel. A shell is every included voxel with the same index radius \(\Delta i^2+\Delta j^2+\Delta k^2\). Its density is the mean of those voxels, and its radius is their mean Cartesian distance. The six face neighbors are one shell even when the three voxel edges differ by a fraction of a step, and the edge-neighbor shell stays separate. The center voxel is the shell at zero. This radial profile is the symmetrical peak: angular variation inside the window has been averaged out, and each shell then has one weight. A voxel past `fit_radius` is left out, so a shell cut by that sphere contributes only its included samples.
+
+The model on that profile is the same isotropic component as above,
+
+\[
+\bar\rho(r) = B + A \exp\!\left(-\frac{r^2}{2\sigma^2}\right).
+\]
+
+Its curvature at the center is \(\bar\rho''(0) = -A/\sigma^2\). Knowing that second derivative determines the ratio \(A/\sigma^2\). It does not determine \(\sigma\) until \(A\) and \(B\) are separated, and a window shorter than the peak often never reaches the baseline, so a percentile of the voxels in the window is not \(B\). The width that is kept is the least-squares width of the shell profile. The start of that fit is the curvature width of the center and the first shell at zero baseline,
+
+\[
+\sigma_0 = \frac{r_1}{\sqrt{2\ln\bigl(\bar\rho(0)/\bar\rho(r_1)\bigr)}},
+\]
+
+which is exact for \(B = 0\) and \(A = \bar\rho(0)\). Amplitude, baseline, and width then move together inside the configured width bounds. `zero_baseline` keeps \(B = 0\) and fits only the amplitude and the width. The baseline may lie below every voxel in a short window when it is free. It is recorded and, as in the other sequential fits, not subtracted.
+
+\(R^2\) and RMSE are still computed on the voxels in the sphere, not on the shells. An anisotropic peak can therefore have a lower \(R^2\) here than under a full covariance: the spherical Gaussian is the description of the averaged profile, scored afterwards on the unaveraged samples.
 
 ### Identifiability at one site
 
