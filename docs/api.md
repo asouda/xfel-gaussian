@@ -70,6 +70,8 @@ Fits the joint model and writes the [output files](outputs.md). Returns the dict
 
 `plot_fit(xyz, y, comp, fit, path)` writes the two-panel diagnostic figure. `comp` is the component DataFrame of the selected model.
 
+`plot_axis_profiles(rho, axes, starts, sampling, orth, record, path, index, ylim=None)` writes the three line profiles of one component. `record` is one centers-table row. Each panel has lines at density 0 and at the center. `run` passes one `ylim` for every component.
+
 `residual_map_path(map_path)` is the input path with `_residual` inserted before the suffix.
 
 `gaussian_residual(rho, axes, starts, sampling, orth, components, radius_factor=5.0, subtraction_radius=None)` returns the map minus each component's Gaussian. The shared background is not removed. Each component is subtracted inside `subtraction_radius` Å when that argument is set, and otherwise inside `radius_factor` times `sigma_1_A`.
@@ -125,7 +127,9 @@ Holds the original grid, a residual copy, and the Cartesian mapping.
 
 ### `run(cfg, verbose=True)`
 
-Runs the subtraction loop and returns the centers DataFrame. Output paths are on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, and `diagnostics`. `residual_map` is the file beside the input. `gaussian_maps` lists `{prefix}_gaussianNN.map` when `save_gaussians` is true, and is empty otherwise.
+Runs the subtraction loop and returns the centers DataFrame. Output paths are on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, `profile_plots`, and `diagnostics`. `residual_map` is the file beside the input. `gaussian_maps` lists `{prefix}_gaussianNN.map` when `save_gaussians` is true, and is empty otherwise. `profile_plots` lists `{prefix}_gaussianNN_profile.png`.
+
+`plot_axis_profiles(dmap, record, path, index, ylim=None)` writes the three line profiles of one accepted peak. `record` is one centers-table row. The residual curve is sampled from `dmap.residual`, which must still include this peak. Each panel has lines at density 0 and at the center. `run` passes one `ylim` for every accepted peak.
 
 `main(argv=None)` parses a single config-path argument and calls `run`.
 

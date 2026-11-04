@@ -7,7 +7,10 @@ spherical ROI, ranks the models by BIC, and checks center identifiability.
 Each component is either isotropic or a fully rotated ellipsoid (full covariance).
 Centers are either refined or held at the detected local maxima. After the
 selected model is written, the input map minus those Gaussians is saved as a
-CCP4 file beside the input and again at ``{prefix}_residual.map``.
+CCP4 file beside the input and again at ``{prefix}_residual.map``. Each
+selected Gaussian also gets a three-panel profile,
+``{prefix}_gaussianNN_profile.png``, of the original density and the fitted
+Gaussian along its principal axes.
 
 The CSV is MODEL-derived, not a validated atomic assignment. The PDB file
 labels the first four centers MN1–MN4 and later centers O1, O2, and so on
@@ -29,6 +32,7 @@ import matplotlib.pyplot as plt
 import gemmi
 import yaml
 from scipy.optimize import least_squares
+from scipy.ndimage import map_coordinates
 from scipy.linalg import solve_triangular
 from scipy.spatial import cKDTree
 
@@ -465,6 +469,112 @@ def plot_fit(xyz, y, comp, fit, path):
     plt.close(fig)
 
 
+def profile_axes(record):
+    """Axis label, unit direction, and width for the three profile panels.
+
+    A full-covariance component uses its principal axes, longest first.
+    An isotropic component uses Cartesian x, y, and z, which share one width.
+    """
+    amplitude = float(record['amplitude'])
+    if bool(record['full_covariance']):
+        specs = []
+        for i in range(1, 4):
+            direction = np.array(
+                [record[f'v{i}_x'], record[f'v{i}_y'], record[f'v{i}_z']], dtype=float,
+            )
+            specs.append((f'principal axis {i}', direction, float(record[f'sigma_{i}_A'])))
+        return amplitude, specs
+    width = float(record['sigma_1_A'])
+    return amplitude, [
+        ('x', np.array([1.0, 0.0, 0.0]), width),
+        ('y', np.array([0.0, 1.0, 0.0]), width),
+        ('z', np.array([0.0, 0.0, 1.0]), width),
+    ]
+
+
+def profile_panels(rho, axes, starts, sampling, orth, record, samples=241):
+    """Sample the three profile lines of one component."""
+    amplitude, specs = profile_axes(record)
+    center = np.array([record['x_A'], record['y_A'], record['z_A']], dtype=float)
+    origin, invstep = _map_frame(axes, starts, sampling, orth)
+    shape = np.asarray(rho.shape, dtype=float)
+    panels = []
+    for label, direction, width in specs:
+        direction = np.asarray(direction, dtype=float)
+        norm = np.linalg.norm(direction)
+        direction = np.array([1.0, 0.0, 0.0]) if norm == 0 else direction / norm
+        half = 4.0 * width if np.isfinite(width) and width > 0 else 1.0
+        t = np.linspace(-half, half, samples)
+        index_xyz = (center + t[:, None] * direction - origin) @ invstep.T
+        inside = np.all((index_xyz >= 0) & (index_xyz <= shape - 1), axis=1)
+        observed = np.full(samples, np.nan)
+        if np.any(inside):
+            observed[inside] = map_coordinates(
+                rho, index_xyz[inside].T, order=1, mode='nearest', prefilter=False,
+            )
+        model = np.full(samples, np.nan)
+        if np.isfinite(width) and width > 0 and np.isfinite(amplitude):
+            model = amplitude * np.exp(-0.5 * (t / width) ** 2)
+        panels.append(dict(
+            title=f'{label}: amplitude {amplitude:.4g}, width {width:.3f} Å',
+            t=t,
+            series=[
+                (observed, 'Original density', '-'),
+                (model, 'Fitted Gaussian', '-'),
+            ],
+        ))
+    return panels
+
+
+def profile_density_limits(panel_groups):
+    """One density range for every profile panel, including zero."""
+    chunks = []
+    for panels in panel_groups:
+        for panel in panels:
+            for values, _, _ in panel['series']:
+                finite = np.asarray(values, dtype=float)
+                finite = finite[np.isfinite(finite)]
+                if len(finite):
+                    chunks.append(finite)
+    if not chunks:
+        return -1.0, 1.0
+    data = np.concatenate(chunks)
+    lo = min(float(data.min()), 0.0)
+    hi = max(float(data.max()), 0.0)
+    pad = 0.05 * (hi - lo) if hi > lo else 1.0
+    return lo - pad, hi + pad
+
+
+def write_profile_figure(panels, path, index, ylim):
+    """Write one three-panel profile with the shared density range."""
+    fig, axs = plt.subplots(1, 3, figsize=(12.4, 4.2), sharey=True, constrained_layout=True)
+    for ax, panel in zip(axs, panels):
+        for values, label, style in panel['series']:
+            ax.plot(panel['t'], values, ls=style, label=label)
+        ax.axhline(0.0, color='0.45', lw=0.8, zorder=0)
+        ax.axvline(0.0, color='0.45', lw=0.8, zorder=0)
+        ax.set_title(panel['title'])
+        ax.set_xlabel('Distance from center (Å)')
+        ax.legend()
+    axs[0].set_ylabel('Density')
+    axs[0].set_ylim(ylim)
+    fig.suptitle(f'Gaussian {index}')
+    fig.savefig(path, dpi=170)
+    plt.close(fig)
+
+
+def plot_axis_profiles(rho, axes, starts, sampling, orth, record, path, index, samples=241, ylim=None):
+    """Write original density and one fitted Gaussian along its three profile axes.
+
+    ``ylim`` is the shared density range. When omitted it is taken from this
+    component alone and still includes zero.
+    """
+    panels = profile_panels(rho, axes, starts, sampling, orth, record, samples=samples)
+    if ylim is None:
+        ylim = profile_density_limits([panels])
+    write_profile_figure(panels, path, index, ylim)
+
+
 def synthetic_benchmark(output, distances=(0.7, 1.0, 1.4, 1.8, 2.2, 2.8), width=0.8, noise=0.08,
                         fix_centers=False, full_covariance=False):
     rng = np.random.default_rng(5)
@@ -669,6 +779,19 @@ def run(cfg, verbose=True):
     write_map_like(cfg['map'], residual, prefix_residual)
     write_map_like(cfg['map'], residual, residual_map)
     gaussian_maps = []
+    profile_plots = []
+    profile_groups = []
+    for number, record in enumerate(comps.to_dict('records'), start=1):
+        profile_groups.append((
+            f'{prefix}_gaussian{number:02d}_profile.png',
+            number,
+            profile_panels(rho, axes, starts, sampling, orth, record),
+        ))
+    if profile_groups:
+        ylim = profile_density_limits([panels for _, _, panels in profile_groups])
+        for profile_path, number, panels in profile_groups:
+            write_profile_figure(panels, profile_path, number, ylim)
+            profile_plots.append(profile_path)
     if cfg['save_gaussians']:
         for row in comps.itertuples(index=False):
             gaussian_path = f'{prefix}_gaussian{int(row.component):02d}.map'
@@ -690,6 +813,8 @@ def run(cfg, verbose=True):
         print(f'Residual maps: {prefix_residual} and {residual_map}')
         if gaussian_maps:
             print('Gaussian maps: ' + ', '.join(gaussian_maps))
+        if profile_plots:
+            print('Axis profiles: ' + ', '.join(profile_plots))
     return {
         'comparison': comparison,
         'components': comps,
@@ -702,6 +827,7 @@ def run(cfg, verbose=True):
         'residual_map': str(residual_map),
         'prefix_residual_map': prefix_residual,
         'gaussian_maps': gaussian_maps,
+        'profile_plots': profile_plots,
         'roi_center': np.asarray(center, dtype=float),
         'background': float(fit.x[-1]),
     }

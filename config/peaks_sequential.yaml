@@ -1,0 +1,24 @@
+# One configuration for both peak models.
+# Paths are relative to this file.
+
+map: ../data/9z35_refmac3C_FoFc_OECA.mrc
+#map: ../data/new_res_0_2.map
+
+sequential_peaks:
+    output_prefix: ../results/Jimin_9z35_refmac3C_FoFc_OECA
+    n_peaks: 5                # Maximum number of peaks to find.
+    threshold_sigma: 1.0      # Stop when the strongest remaining peak is below this multiple of the robust scale of the original map.
+    fit_radius: 1.25          # Radius of the Gaussian fit.
+    sigma_min: 0.1            # Minimum width of the Gaussian fit.
+    sigma_max: 2.0            # Maximum width of the Gaussian fit.
+    max_shift: 1.2            # When fix_centers is false: maximum center shift from the seed, in Å.
+    min_separation: 1.25      # Radius in Å of the exclusion sphere around a seed after each attempt.
+    save_steps: false         # Save the steps of the algorithm to a file.
+    fix_centers: true         # Hold each center on the seed instead of refining it.
+    method: full_covariance   # full_covariance, isotropic, or spherical.
+    zero_baseline: true       # Hold each Gaussian baseline at zero. False fits a baseline at every peak.
+    neighborhood_size: 3      # Odd side length of the index neighborhood around a local maximum. 3 means 3x3x3.
+    spline_seed: true         # Place the seed at the maximum of a spline interpolant of that neighborhood.
+    spline_order: 3           # Order of that spline when spline_seed is true. 3 is cubic. Allowed values are 0 through 5.
+    subtraction_radius: null  # Radius in Å inside which each fitted Gaussian is removed. Null uses five times that Gaussian's longest principal width.
+    save_gaussians: true      # Write one CCP4 map per fitted Gaussian, named {prefix}_gaussian01.map and so on.

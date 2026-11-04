@@ -1,0 +1,20 @@
+# One configuration for both peak models.
+# Paths are relative to this file.
+
+#map: ../data/9z35_omitOEC_withCa_BGLU189_extended_10A.map
+map: ../data/new_res_0_2.map
+
+multi_peaks:
+    output_prefix: ../results/9z35_omitOEC_withCa_BGLU189_multi_peaks_fixed
+    center: null              # Center of the search sphere. Null uses the strongest positive voxel.
+    radius: 4.5               # Radius of the search sphere around the center.
+    max_components: 9         # Maximum number of peaks to find.
+    min_separation: 0.7       # Radius in Å of the exclusion sphere around a seed after each attempt.
+    min_width: 0.25           # Minimum width of the Gaussian fit.
+    max_width: 2.0            # Maximum width of the Gaussian fit.
+    restarts: 3               # Number of random restarts of the algorithm.
+    synthetic: false          # Use a synthetic map for testing.
+    fix_centers: true         # Hold each center on the detected local maximum instead of refining it.
+    full_covariance: true     # Full 3x3 covariance: a rotated ellipsoid. False keeps an isotropic width.
+    subtraction_radius: null  # Radius in Å inside which each fitted Gaussian is removed. Null uses five times that Gaussian's longest principal width.
+    save_gaussians: false     # Write one CCP4 map per fitted Gaussian, named {prefix}_gaussian01.map and so on.

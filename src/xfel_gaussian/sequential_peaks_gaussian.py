@@ -16,7 +16,10 @@ inside that voxel's neighborhood. The spherical fit does not use that
 interpolant: the average is centered on the voxel. Subtract only the Gaussian
 (not the local baseline) from the sampled map, then repeat. The finished
 residual is written beside the input map, with ``_residual`` before the
-suffix, and again at ``{prefix}_residual.map``.
+suffix, and again at ``{prefix}_residual.map``. Each accepted Gaussian also
+gets a three-panel profile, ``{prefix}_gaussianNN_profile.png``, of the
+original density, the density after every earlier Gaussian, and the fitted
+Gaussian along its principal axes.
 
 The YAML file may be a flat mapping or a combined file with a
 ``sequential_peaks`` section and a shared ``map`` entry. See config/peaks.yaml.
@@ -683,6 +686,120 @@ def fit_spherical_peak(dmap, seed, radius, sigma_bounds, zero_baseline=False):
     return shape
 
 
+def profile_axes(record):
+    """Axis label, unit direction, and width for the three profile panels.
+
+    A full-covariance fit uses the principal axes of the ellipsoid, longest
+    first. An isotropic or spherical fit uses Cartesian x, y, and z, which
+    share one width.
+    """
+    amplitude = float(record['amplitude'])
+    if bool(record['full_covariance']):
+        specs = []
+        for i in range(1, 4):
+            direction = np.array(
+                [record[f'v{i}_x'], record[f'v{i}_y'], record[f'v{i}_z']], dtype=float,
+            )
+            specs.append((f'principal axis {i}', direction, float(record[f'sigma_{i}_A'])))
+        return amplitude, specs
+    width = float(record['sigma_1_A'])
+    return amplitude, [
+        ('x', np.array([1.0, 0.0, 0.0]), width),
+        ('y', np.array([0.0, 1.0, 0.0]), width),
+        ('z', np.array([0.0, 0.0, 1.0]), width),
+    ]
+
+
+def _sample_line(values, index_xyz, inside):
+    sampled = np.full(len(index_xyz), np.nan)
+    if np.any(inside):
+        sampled[inside] = map_coordinates(
+            values, index_xyz[inside].T, order=1, mode='nearest', prefilter=False,
+        )
+    return sampled
+
+
+def profile_panels(dmap, record, samples=241):
+    """Sample the three profile lines. ``dmap.residual`` must still contain this peak."""
+    amplitude, specs = profile_axes(record)
+    center = np.array([record['x_A'], record['y_A'], record['z_A']], dtype=float)
+    shape = np.asarray(dmap.original.shape, dtype=float)
+    panels = []
+    for label, direction, width in specs:
+        direction = np.asarray(direction, dtype=float)
+        norm = np.linalg.norm(direction)
+        direction = np.array([1.0, 0.0, 0.0]) if norm == 0 else direction / norm
+        half = 4.0 * width if np.isfinite(width) and width > 0 else 1.0
+        t = np.linspace(-half, half, samples)
+        index_xyz = dmap.to_index(center + t[:, None] * direction)
+        inside = np.all((index_xyz >= 0) & (index_xyz <= shape - 1), axis=1)
+        model = np.full(samples, np.nan)
+        if np.isfinite(width) and width > 0 and np.isfinite(amplitude):
+            model = amplitude * np.exp(-0.5 * (t / width) ** 2)
+        panels.append(dict(
+            title=f'{label}: amplitude {amplitude:.4g}, width {width:.3f} Å',
+            t=t,
+            series=[
+                (_sample_line(dmap.original, index_xyz, inside), 'Original density', '-'),
+                (_sample_line(dmap.residual, index_xyz, inside), 'After previous peaks', '--'),
+                (model, 'Fitted Gaussian', '-'),
+            ],
+        ))
+    return panels
+
+
+def profile_density_limits(panel_groups):
+    """One density range for every profile panel, including zero."""
+    chunks = []
+    for panels in panel_groups:
+        for panel in panels:
+            for values, _, _ in panel['series']:
+                finite = np.asarray(values, dtype=float)
+                finite = finite[np.isfinite(finite)]
+                if len(finite):
+                    chunks.append(finite)
+    if not chunks:
+        return -1.0, 1.0
+    data = np.concatenate(chunks)
+    lo = min(float(data.min()), 0.0)
+    hi = max(float(data.max()), 0.0)
+    pad = 0.05 * (hi - lo) if hi > lo else 1.0
+    return lo - pad, hi + pad
+
+
+def write_profile_figure(panels, path, index, ylim):
+    """Write one three-panel profile with the shared density range."""
+    fig, axs = plt.subplots(1, 3, figsize=(12.4, 4.2), sharey=True, constrained_layout=True)
+    for ax, panel in zip(axs, panels):
+        for values, label, style in panel['series']:
+            ax.plot(panel['t'], values, ls=style, label=label)
+        ax.axhline(0.0, color='0.45', lw=0.8, zorder=0)
+        ax.axvline(0.0, color='0.45', lw=0.8, zorder=0)
+        ax.set_title(panel['title'])
+        ax.set_xlabel('Distance from center (Å)')
+        ax.legend()
+    axs[0].set_ylabel('Density')
+    axs[0].set_ylim(ylim)
+    fig.suptitle(f'Gaussian {index}')
+    fig.savefig(path, dpi=170)
+    plt.close(fig)
+
+
+def plot_axis_profiles(dmap, record, path, index, samples=241, ylim=None):
+    """Write line profiles of one accepted peak.
+
+    Each panel shows the input density, the density after every earlier
+    accepted Gaussian has been removed, and this peak's fitted Gaussian.
+    ``dmap.residual`` must still contain this peak. ``ylim`` is the shared
+    density range; when omitted it is taken from this peak alone and still
+    includes zero.
+    """
+    panels = profile_panels(dmap, record, samples=samples)
+    if ylim is None:
+        ylim = profile_density_limits([panels])
+    write_profile_figure(panels, path, index, ylim)
+
+
 def residual_map_path(map_path):
     """Path of the residual CCP4 map: the input name with ``_residual`` before the suffix."""
     source = Path(map_path)
@@ -723,6 +840,8 @@ def run(cfg, verbose=True):
     excluded = np.zeros(dm.original.shape, bool)
     history = []
     gaussian_maps = []
+    profile_plots = []
+    profile_groups = []
     if cfg['save_steps']:
         dm.save_map(f'{prefix}_step00.map')
     if verbose:
@@ -775,11 +894,6 @@ def run(cfg, verbose=True):
             fitted = None
         if fitted is not None and fitted['success'] and fitted['amp'] > 0:
             center = fitted['xyz']
-            # Gaussian subtraction only; retaining local background prevents map-wide drift.
-            dm.subtract(
-                fitted['amp'], center, fitted['sigma'],
-                cholesky=fitted['cholesky'], radius=cfg['subtraction_radius'],
-            )
             row = dict(
                 iteration=k,
                 seed_x_A=float(seed[0]), seed_y_A=float(seed[1]), seed_z_A=float(seed[2]),
@@ -799,6 +913,17 @@ def run(cfg, verbose=True):
                     continue
                 row[key] = value
             history.append(row)
+            # Sample before subtraction, so the residual still contains this peak.
+            profile_groups.append((
+                f'{prefix}_gaussian{len(history):02d}_profile.png',
+                len(history),
+                profile_panels(dm, row),
+            ))
+            # Gaussian subtraction only; retaining local background prevents map-wide drift.
+            dm.subtract(
+                fitted['amp'], center, fitted['sigma'],
+                cholesky=fitted['cholesky'], radius=cfg['subtraction_radius'],
+            )
             if cfg['save_gaussians']:
                 gaussian_path = f'{prefix}_gaussian{len(history):02d}.map'
                 dm.save_array(
@@ -841,15 +966,23 @@ def run(cfg, verbose=True):
         fig.tight_layout()
         fig.savefig(diagnostics, dpi=180)
         plt.close(fig)
+    if profile_groups:
+        ylim = profile_density_limits([panels for _, _, panels in profile_groups])
+        for profile_path, number, panels in profile_groups:
+            write_profile_figure(panels, profile_path, number, ylim)
+            profile_plots.append(profile_path)
     if verbose:
         print(f'Saved {len(df)} components; results: {centers_csv}, {centers_pdb}, {prefix_residual}, and {residual_map}')
         if gaussian_maps:
             print('Gaussian maps: ' + ', '.join(gaussian_maps))
+        if profile_plots:
+            print('Axis profiles: ' + ', '.join(profile_plots))
     df.attrs['centers_csv'] = centers_csv
     df.attrs['centers_pdb'] = centers_pdb
     df.attrs['residual_map'] = str(residual_map)
     df.attrs['prefix_residual_map'] = prefix_residual
     df.attrs['gaussian_maps'] = gaussian_maps
+    df.attrs['profile_plots'] = profile_plots
     df.attrs['diagnostics'] = diagnostics
     return df
 

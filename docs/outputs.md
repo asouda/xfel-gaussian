@@ -81,6 +81,10 @@ One row per unordered pair of selected centers. The file has no pair rows when B
 
 Left: observed voxel density against the joint model. Right: residual against the Cartesian axis along which the ROI points span the largest range. The horizontal axis of the residual panel is that coordinate, not a principal axis.
 
+### `{prefix}_gaussianNN_profile.png`
+
+One figure per selected Gaussian, numbered in component order. Each figure has three panels. A full-covariance component is sampled along its principal axes, longest first. An isotropic component is sampled along Cartesian \(x\), \(y\), and \(z\). Every panel plots the input density, interpolated along that line, and the fitted Gaussian without the shared background. The legend names both curves. A horizontal line marks density 0 and a vertical line marks the center. Every Gaussian in the run uses the same density scale, and that scale includes zero. The title names the axis and gives that Gaussian's amplitude and the width along the axis. The horizontal coordinate is signed distance from the center, in Å, over four widths.
+
 ### `{prefix}_synthetic.csv`
 
 Written only when `synthetic: true`.
@@ -135,6 +139,10 @@ Written only when `save_steps` is true. `step00` is the residual before any subt
 
 Written when at least one peak was accepted. Left: fitted amplitude against iteration. Right: local \(R^2\) against iteration.
 
+### `{prefix}_gaussianNN_profile.png`
+
+One figure per accepted Gaussian, numbered in centers-table order. Each figure has three panels. A full-covariance peak is sampled along its principal axes, longest first. An isotropic or spherical peak is sampled along Cartesian \(x\), \(y\), and \(z\). Every panel plots three curves, interpolated along that line: the input density, the density after every earlier accepted Gaussian has been removed, and the fitted Gaussian without its local baseline. On the first peak the middle curve matches the input, because nothing has been removed yet. The legend names the curves. A horizontal line marks density 0 and a vertical line marks the center. Every accepted peak uses the same density scale, and that scale includes zero. The title names the axis and gives that Gaussian's amplitude and the width along the axis. The horizontal coordinate is signed distance from the center, in Å, over four widths.
+
 ## PDB records
 
 Both workflows write one `HETATM` record per center, 80 columns, serial numbers starting at 43042. The file ends with an `END` record.
@@ -157,6 +165,6 @@ Those filenames are set inside the notebooks and do not use `output_prefix`. The
 
 ## Return values
 
-The joint `run` returns a dictionary. A map run contains `comparison`, `components`, and `pairs` as DataFrames, plus `diagnostics`, `models_csv`, `centers_csv`, `centers_pdb`, `pairs_csv`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, `roi_center`, and `background`. `residual_map` is the file beside the input. `prefix_residual_map` is `{prefix}_residual.map`. `gaussian_maps` is the list of `{prefix}_gaussianNN.map` paths, empty when `save_gaussians` is false. A synthetic run contains `synthetic` and `synthetic_csv` only.
+The joint `run` returns a dictionary. A map run contains `comparison`, `components`, and `pairs` as DataFrames, plus `diagnostics`, `models_csv`, `centers_csv`, `centers_pdb`, `pairs_csv`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, `profile_plots`, `roi_center`, and `background`. `residual_map` is the file beside the input. `prefix_residual_map` is `{prefix}_residual.map`. `gaussian_maps` is the list of `{prefix}_gaussianNN.map` paths, empty when `save_gaussians` is false. `profile_plots` lists `{prefix}_gaussianNN_profile.png`. A synthetic run contains `synthetic` and `synthetic_csv` only.
 
-The sequential `run` returns the centers DataFrame. Paths are stored on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, and `diagnostics`. `residual_map` is the file beside the input and `prefix_residual_map` is `{prefix}_residual.map`. `gaussian_maps` is empty unless `save_gaussians` is true. The diagnostics path is set even when the figure was not written because no peak was accepted.
+The sequential `run` returns the centers DataFrame. Paths are stored on `df.attrs` under `centers_csv`, `centers_pdb`, `residual_map`, `prefix_residual_map`, `gaussian_maps`, `profile_plots`, and `diagnostics`. `residual_map` is the file beside the input and `prefix_residual_map` is `{prefix}_residual.map`. `gaussian_maps` is empty unless `save_gaussians` is true. `profile_plots` lists `{prefix}_gaussianNN_profile.png` and is empty when no peak was accepted. The diagnostics path is set even when the figure was not written because no peak was accepted.
