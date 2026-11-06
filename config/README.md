@@ -32,7 +32,7 @@ Joint fit of K = 1, ..., Kmax positive Gaussians plus one constant background in
 
 ## `sequential_peaks`
 
-Fit one positive Gaussian and a local baseline at the strongest remaining local maximum, subtract only the Gaussian, and repeat. `zero_baseline` holds that baseline at zero. `method` selects the fitter: a least-squares isotropic width, a least-squares rotated ellipsoid, or the Gaussian of a spherical shell average about the detected voxel. The center is held at the seed or refined from it. The seed is the detected voxel, or the maximum of a spline in that voxel's neighborhood. The spherical fit stays on the detected voxel.
+Fit one positive Gaussian and a local baseline at the strongest remaining local maximum, subtract only the Gaussian, and repeat. `n_on_original` fits that many peaks on the original density before those Gaussians are removed together; later peaks then follow the one-at-a-time subtraction. The default, 1, removes each Gaussian before the next search. `zero_baseline` holds that baseline at zero. `method` selects the fitter: a least-squares isotropic width, a least-squares rotated ellipsoid, or the Gaussian of a spherical shell average about the detected voxel. The center is held at the seed or refined from it. The seed is the detected voxel, or the maximum of a spline in that voxel's neighborhood. The spherical fit stays on the detected voxel.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ Fit one positive Gaussian and a local baseline at the strongest remaining local 
 | `sigma_max` | `1.8` | Upper width bound in Å. Must exceed `sigma_min`. |
 | `max_shift` | `1.2` | If centers are refined, each center stays within this distance in Å of its seed. Ignored when `fix_centers` is true. |
 | `min_separation` | `0.7` | Radius in Å of the exclusion sphere placed around a seed after each attempt, so the next peak is a different site. |
-| `save_steps` | `false` | Write a CCP4 map of the residual before subtraction and after each accepted peak. |
+| `save_steps` | `false` | Write a CCP4 map of the residual before subtraction and after each removal. With `n_on_original` greater than 1, the first group is removed together, so that group produces one step map. |
 | `fix_centers` | `false` | Hold the center at the seed. If false, the center may move by up to `max_shift`. The spherical method holds the center on the detected voxel either way. |
 | `full_covariance` | `false` | Legacy shape switch, used only when `method` is omitted. If true, fit a rotated ellipsoid. If false, fit one isotropic width. |
 | `method` | `null` | `full_covariance`, `isotropic`, or `spherical`. `null` follows `full_covariance`: true selects `full_covariance` and false selects `isotropic`. When `method` is set, it selects the fitter and `full_covariance` is not read. `spherical` averages voxels of equal index radius inside `fit_radius` of the detected voxel and fits one isotropic Gaussian to that radial profile. The initial width is the curvature of the center and the first shell; the accepted width is the least-squares width of the profile. `spline_seed` is turned off and the center stays on the voxel. |
@@ -53,6 +53,7 @@ Fit one positive Gaussian and a local baseline at the strongest remaining local 
 | `spline_seed` | `false` | If true, the seed is the maximum of a spline interpolant of the residual inside that neighborhood. If false, the seed is the detected voxel. |
 | `spline_order` | `3` | Order of the spline used when `spline_seed` is true. `3` is cubic. Integers from 0 through 5 are accepted. Orders 0 and 1 keep the seed on the detected voxel. |
 | `subtraction_radius` | `null` | Radius in Å of the sphere inside which each accepted Gaussian is removed before the next search. `null` uses five times that Gaussian's longest principal width. A number must be positive. The written residual uses the same spheres. |
+| `n_on_original` | `1` | Fit this many peaks on the original density before removing them. Exclusion still keeps those seeds apart. Later peaks are fitted on the residual and removed one at a time. `1` is the one-peak-at-a-time search. A search that ends early still removes the peaks it accepted. |
 | `save_gaussians` | `false` | Write one CCP4 map per accepted Gaussian, `{prefix}_gaussian01.map`, `{prefix}_gaussian02.map`, and so on, in the order of the centers table. Each map is that Gaussian alone, zero outside its removal sphere. |
 
 `peaks.yaml` sets `method: full_covariance`, turns spline seeding on (`spline_seed: true`, `spline_order: 3`, `neighborhood_size: 3`), holds centers fixed, and sets `n_peaks: 9`, `fit_radius: 0.75`, `sigma_min: 0.1`, and `sigma_max: 2.0`. The output prefix is under `results/`. Library defaults leave `method` unset, so the fitter follows `full_covariance`, and leave `spline_seed` off. When `method` is `spherical`, the program centers every shell on the detected voxel and does not move that center, whether or not the file asks for a spline seed.

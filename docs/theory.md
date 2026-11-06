@@ -254,7 +254,9 @@ The fit uses voxels inside a sphere about the current seed. After a successful f
 
 inside a sphere whose radius is `subtraction_radius` in Å, or five times the longest principal width when that key is `null`. The same rule is used when the joint fit writes its residual map. The baseline \(b_k\) is not removed. Each local baseline would otherwise be subtracted again at the next site and walk the residual downward across the map.
 
-This is a matching-pursuit style of decomposition. It is cheaper than a joint fit over the whole map, and it lets a strong peak reveal a weaker neighbor. The price is order dependence. A broad feature can be carved into several Gaussians. A weak peak under a strong one is invisible until the strong one is removed, and it is never seen if the strong fit absorbed it. Joint refinement of all accepted centers is not a later step.
+`n_on_original` delays that update. The first that many accepted peaks are all fitted while \(\rho_k\) is still the input density. Their seeds are kept apart by the exclusion sphere, and their Gaussians are removed together after the last of them is accepted. Every later peak then follows the one-step update above. The default value, 1, removes each Gaussian before the next search. A search that stops early still removes the peaks it accepted, so the written residual is the input minus every accepted Gaussian.
+
+This is a matching-pursuit style of decomposition. It is cheaper than a joint fit over the whole map, and it lets a strong peak reveal a weaker neighbor. The price is order dependence. A broad feature can be carved into several Gaussians. A weak peak under a strong one is invisible until the strong one is removed, and it is never seen if the strong fit absorbed it. With `n_on_original` greater than 1, the leading peaks are fitted without that unveiling. Joint refinement of all accepted centers is not a later step.
 
 ### Robust threshold
 

@@ -115,6 +115,8 @@ One row per accepted peak, in subtraction order. A skipped or non-positive fit d
 | `amplitude` | Fitted \(A\). |
 | `background` | Baseline of this peak only. It is zero when `zero_baseline` is set. It is not subtracted. |
 | `zero_baseline` | Whether the baseline was held at zero. |
+| `n_on_original` | How many leading peaks were fitted on the original density before that group was removed. |
+| `fitted_on_original` | True for those leading peaks. Later rows were fitted after that group had been removed. |
 | `center_fixed`, `full_covariance` | The switches used. For a spherical fit the center is held on the detected voxel and `full_covariance` is false. |
 | `method` | `isotropic`, `full_covariance`, or `spherical`. |
 | `spline_seed`, `spline_order`, `neighborhood_size` | How the seed was placed. `spline_order` is used when `spline_seed` is true. Orders below 2 leave the seed on the detected voxel. |
@@ -133,7 +135,7 @@ See below. The sequential and joint writers use the same record layout.
 
 ### `{prefix}_stepNN.map`
 
-Written only when `save_steps` is true. `step00` is the residual before any subtraction. `step01` and later follow each accepted peak. Failed attempts do not produce a step.
+Written only when `save_steps` is true. `step00` is the residual before any subtraction. Later files are written when Gaussians are removed. With `n_on_original` equal to 1, one file follows each accepted peak and is numbered by that peak's iteration. With a larger value, the first group is removed together and produces one file, numbered by the iteration of its last peak; each later peak produces its own. Failed attempts do not produce a step.
 
 ### `{prefix}_diagnostics.png`
 
@@ -141,7 +143,7 @@ Written when at least one peak was accepted. Left: fitted amplitude against iter
 
 ### `{prefix}_gaussianNN_profile.png`
 
-One figure per accepted Gaussian, numbered in centers-table order. Each figure has three panels. A full-covariance peak is sampled along its principal axes, longest first. An isotropic or spherical peak is sampled along Cartesian \(x\), \(y\), and \(z\). Every panel plots three curves, interpolated along that line: the input density, the density after every earlier accepted Gaussian has been removed, and the fitted Gaussian without its local baseline. On the first peak the middle curve matches the input, because nothing has been removed yet. The legend names the curves. A horizontal line marks density 0 and a vertical line marks the center. Every accepted peak uses the same density scale, and that scale includes zero. The title names the axis and gives that Gaussian's amplitude and the width along the axis. The horizontal coordinate is signed distance from the center, in Å, over four widths.
+One figure per accepted Gaussian, numbered in centers-table order. Each figure has three panels. A full-covariance peak is sampled along its principal axes, longest first. An isotropic or spherical peak is sampled along Cartesian \(x\), \(y\), and \(z\). Every panel plots three curves, interpolated along that line: the input density, the density after every earlier accepted Gaussian has been removed, and the fitted Gaussian without its local baseline. For every peak fitted on the original density, including the first `n_on_original` peaks, the middle curve matches the input, because those Gaussians are still in the map. The legend names the curves. A horizontal line marks density 0 and a vertical line marks the center. Every accepted peak uses the same density scale, and that scale includes zero. The title names the axis and gives that Gaussian's amplitude and the width along the axis. The horizontal coordinate is signed distance from the center, in Å, over four widths.
 
 ## PDB records
 

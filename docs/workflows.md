@@ -75,7 +75,7 @@ flowchart TD
   D -->|no| E[Stop and write the residual]
   D -->|yes| S[Seed at the voxel or the spline maximum]
   S --> F[Fit one Gaussian in a sphere]
-  F --> G[Subtract the Gaussian only]
+  F --> G[Subtract now, or after the first N peaks]
   G --> H[Exclude a separation sphere]
   H --> C
 ```
@@ -94,13 +94,15 @@ flowchart TD
 
 4. **Accept and subtract.** A fit is accepted when the solver reports success and the amplitude is positive. Only the Gaussian is subtracted, inside a sphere. The radius is `subtraction_radius` in Å when that key is set, and five times the longest principal width when it is `null`. The fitted baseline stays in the map. Leaving the baseline in place avoids a step-wise drift of the whole residual. The subtraction uses the Mahalanobis form of the fitted factor, including the isotropic case, where the factor is \(\sigma I\).
 
+   `n_on_original` holds the first that many accepted peaks in the map. Each of them is fitted on the original density. Exclusion still advances the search to a new site. When that many peaks have been accepted, those Gaussians are removed together, and every later peak is fitted on the residual and removed before the next search. The default, 1, removes each Gaussian immediately. If the search stops before that many peaks are accepted, the accepted ones are still removed before the residual is written.
+
 5. **Exclude the site.** Whether or not the fit was accepted, voxels of the original grid within `min_separation` of the fitted center (or of the seed, if the fit raised a local error) are masked. The next search cannot return that neighborhood. A failed or non-positive fit is omitted from the table and still consumes the site.
 
 6. **Repeat** until `n_peaks` attempts have been made or the stopping rule fires. `n_peaks` is a maximum, not a promise that that many peaks exist.
 
 7. **Write the residual.** The map at the end of the loop is the input minus every accepted Gaussian. Local baselines are still present. That array is written beside the input, with `_residual` inserted before the input suffix, and again as `{prefix}_residual.map`. An empty search writes the input densities to both paths.
 
-`save_steps: true` writes the residual before any subtraction as `step00`, then one CCP4 map after each accepted peak. Failed attempts do not get a step file. `save_gaussians: true` writes `{prefix}_gaussian01.map` and the following numbers, one map for each accepted Gaussian, in centers-table order.
+`save_steps: true` writes the residual before any subtraction as `step00`, then one CCP4 map each time Gaussians are removed. With `n_on_original` equal to 1 that is once per accepted peak. With a larger value the first group is removed together, so it produces one step map, numbered by the iteration of its last peak, and each later peak produces its own. Failed attempts do not get a step file. `save_gaussians: true` writes `{prefix}_gaussian01.map` and the following numbers, one map for each accepted Gaussian, in centers-table order.
 
 When centers are free, a center can move at most `max_shift` from its seed. Exclusion is applied around the refined center, and the next detected voxel lies outside that sphere, but the next refinement can move back toward the previous center by up to `max_shift`. Fixed centers cannot move. A later spline seed can still fall closer than `min_separation` to an earlier center, because exclusion masks voxels and the spline maximum may lie between the new voxel and a masked neighbor.
 
@@ -108,7 +110,7 @@ When centers are free, a center can move at most `max_shift` from its seed. Excl
 
 The joint figure has two panels: voxel density against the joint prediction, and residuals against one Cartesian coordinate. The sequential figure plots fitted amplitude and local \(R^2\) against the subtraction index, and it is written only when at least one peak was accepted.
 
-Each accepted Gaussian also gets `{prefix}_gaussianNN_profile.png`. The three panels follow the principal axes of a full-covariance ellipsoid, and Cartesian \(x\), \(y\), and \(z\) for an isotropic or spherical Gaussian. Each panel shows the input density, the density after every earlier accepted Gaussian, and the fitted Gaussian along that line, with a legend. Lines mark density 0 and the center. Every profile in the run shares one density scale. The title gives the axis, the amplitude, and the width. The first peak's middle curve matches the input. The joint profiles use the same zero lines and one shared density scale.
+Each accepted Gaussian also gets `{prefix}_gaussianNN_profile.png`. The three panels follow the principal axes of a full-covariance ellipsoid, and Cartesian \(x\), \(y\), and \(z\) for an isotropic or spherical Gaussian. Each panel shows the input density, the density after every earlier accepted Gaussian, and the fitted Gaussian along that line, with a legend. Lines mark density 0 and the center. Every profile in the run shares one density scale. The title gives the axis, the amplitude, and the width. The middle curve is the density the peak was fitted to, so it matches the input for every peak fitted on the original density. The joint profiles use the same zero lines and one shared density scale.
 
 Elliptical \(1\sigma\) and \(2\sigma\) sections are drawn by `xfel_gaussian_module_calculation.ipynb` and by the full-covariance tutorial. The library plotters do not draw those ellipses. The section formula is in [Theory](theory.md).
 
@@ -120,6 +122,7 @@ Configuration errors are raised before any fit. The usual ones:
 - A key is not in that workflow's set. A flat file and a sectioned file are both legal; a typo in a key is not.
 - `min_width` and `max_width`, or `sigma_min` and `sigma_max`, are not a positive proper interval.
 - `radius`, `max_components`, `restarts`, `fit_radius`, or `n_peaks` is not positive.
+- `n_on_original` is not a positive integer.
 - `subtraction_radius` is set and is not a positive number of Å. `null` keeps the default of five principal widths.
 - `neighborhood_size` is not a positive odd integer, or `spline_order` is not an integer from 0 through 5.
 - `map` is missing, or the path is not an existing file. The joint workflow allows a missing map only when `synthetic` is true.

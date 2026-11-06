@@ -13,8 +13,11 @@ ellipsoid, or the Gaussian of a spherical shell average about the detected
 voxel. Its center is either refined or held at the seed. By default the seed
 is the detected voxel. It can instead be the maximum of a spline interpolant
 inside that voxel's neighborhood. The spherical fit does not use that
-interpolant: the average is centered on the voxel. Subtract only the Gaussian
-(not the local baseline) from the sampled map, then repeat. The finished
+interpolant: the average is centered on the voxel. By default, subtract
+only the Gaussian (not the local baseline) before the next search.
+``n_on_original`` fits that many peaks on the original density first and
+removes those Gaussians together; later peaks then subtract one at a time.
+The finished
 residual is written beside the input map, with ``_residual`` before the
 suffix, and again at ``{prefix}_residual.map``. Each accepted Gaussian also
 gets a three-panel profile, ``{prefix}_gaussianNN_profile.png``, of the
@@ -64,6 +67,7 @@ DEFAULTS = dict(
     spline_seed=False,
     spline_order=3,
     subtraction_radius=None,
+    n_on_original=1,
 )
 
 
@@ -191,6 +195,9 @@ def resolve_config(cfg):
         raise ValueError('Invalid fitting radius or width bounds')
     if resolved['n_peaks'] < 1:
         raise ValueError('n_peaks must be positive')
+    resolved['n_on_original'] = _as_int(resolved['n_on_original'], 'n_on_original')
+    if resolved['n_on_original'] < 1:
+        raise ValueError('n_on_original must be a positive integer')
     resolved['subtraction_radius'] = _as_optional_positive(resolved['subtraction_radius'], 'subtraction_radius')
     return resolved
 
@@ -842,6 +849,25 @@ def run(cfg, verbose=True):
     gaussian_maps = []
     profile_plots = []
     profile_groups = []
+    pending = []
+
+    def subtract_pending():
+        """Remove Gaussians held back so their fits could use the original density."""
+        if not pending:
+            return
+        removed = len(pending)
+        for item in pending:
+            dm.subtract(
+                item['amp'], item['center'], item['sigma'],
+                cholesky=item['cholesky'], radius=cfg['subtraction_radius'],
+            )
+        step_k = pending[-1]['iteration']
+        pending.clear()
+        if cfg['save_steps']:
+            dm.save_map(f'{prefix}_step{step_k:02d}.map')
+        if verbose and removed > 1:
+            print(f'Removed {removed} Gaussians fitted on the original density.')
+
     if cfg['save_steps']:
         dm.save_map(f'{prefix}_step00.map')
     if verbose:
@@ -860,7 +886,12 @@ def run(cfg, verbose=True):
         print(f'Grid: {dm.original.shape}; robust map sigma={reference_noise:.5g}; '
               f'positive peak threshold={threshold:.5g}')
         baseline = 'baseline fixed at 0' if cfg['zero_baseline'] else 'baseline fit at each peak'
-        print(f'Model: {mode}; centers {where}; {baseline}')
+        if cfg['n_on_original'] == 1:
+            removal = 'each Gaussian is removed before the next search'
+        else:
+            removal = (f'the first {cfg["n_on_original"]} Gaussians are fitted on the original '
+                       f'density and removed together')
+        print(f'Model: {mode}; centers {where}; {baseline}; {removal}')
     for k in range(1, cfg['n_peaks'] + 1):
         peak = choose_peak(dm.residual, valid, excluded, cfg['neighborhood_size'])
         if peak is None:
@@ -901,6 +932,8 @@ def run(cfg, verbose=True):
                 peak_before=height, amplitude=fitted['amp'], background=fitted['bg'],
                 center_fixed=bool(cfg['fix_centers']), full_covariance=bool(cfg['full_covariance']),
                 method=cfg['method'], zero_baseline=bool(cfg['zero_baseline']),
+                n_on_original=int(cfg['n_on_original']),
+                fitted_on_original=len(history) < cfg['n_on_original'],
                 spline_seed=bool(cfg['spline_seed']), spline_order=int(cfg['spline_order']),
                 neighborhood_size=int(cfg['neighborhood_size']),
                 R2=fitted['r2'], RMSE=fitted['rmse'], n_voxels=fitted['n'],
@@ -919,11 +952,14 @@ def run(cfg, verbose=True):
                 len(history),
                 profile_panels(dm, row),
             ))
-            # Gaussian subtraction only; retaining local background prevents map-wide drift.
-            dm.subtract(
-                fitted['amp'], center, fitted['sigma'],
-                cholesky=fitted['cholesky'], radius=cfg['subtraction_radius'],
-            )
+            # The first n_on_original peaks stay in the map until all of them
+            # are fitted. Later peaks are removed before the next search.
+            pending.append(dict(
+                amp=fitted['amp'], center=center, sigma=fitted['sigma'],
+                cholesky=fitted['cholesky'], iteration=k,
+            ))
+            if len(history) >= cfg['n_on_original']:
+                subtract_pending()
             if cfg['save_gaussians']:
                 gaussian_path = f'{prefix}_gaussian{len(history):02d}.map'
                 dm.save_array(
@@ -939,11 +975,10 @@ def run(cfg, verbose=True):
                       f'amp={fitted["amp"]:.3f}, principal σ='
                       f'({fitted["sigma_1_A"]:.3f}, {fitted["sigma_2_A"]:.3f}, {fitted["sigma_3_A"]:.3f}) Å, '
                       f'R2={fitted["r2"]:.3f}')
-            if cfg['save_steps']:
-                dm.save_map(f'{prefix}_step{k:02d}.map')
         marker = fitted['xyz'] if fitted is not None else seed
         _, _, around = dm.local(marker, cfg['min_separation'], dm.original)
         excluded[tuple(around.T)] = True
+    subtract_pending()
     df = pd.DataFrame(history)
     centers_csv = f'{prefix}_centers.csv'
     centers_pdb = f'{prefix}_centers.pdb'

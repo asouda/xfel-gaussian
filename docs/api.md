@@ -157,5 +157,6 @@ Library defaults, before `config/peaks.yaml` overrides them:
 | | | `neighborhood_size` | `3` |
 | | | `spline_seed` | `False` |
 | | | `spline_order` | `3` |
+| | | `n_on_original` | `1` |
 
 The example `config/peaks.yaml` turns fixed centers and the full covariance on for both workflows, sets sequential `method: full_covariance`, raises the joint component limit to 9, and turns sequential spline seeding on (`spline_seed: true`, order 3, neighborhood side 3). The file, not this table, is the configuration of a run. Sequential `method` may be `isotropic`, `full_covariance`, or `spherical`. `None` follows the `full_covariance` boolean.
