@@ -1,18 +1,18 @@
 # One configuration for both peak models.
 # Paths are relative to this file.
 
-map: ../data/9z35_omitOEC_BGLU189_grid0p20_clip_10A.map
-#map: ../data/new_res_0_2.map
+#map: ../data/Jimin_omitOEC_refined_Nov6.map
+map: ../data/Jimin_Nov6/9z35_ConfA_refmac2_omitOEX_hires.map
 
 sequential_peaks:
-    output_prefix: ../results/9z35_omitOEC_BGLU189_grid0p20
-    n_peaks: 15               # Maximum number of peaks to find.
+    output_prefix: ../results/9z35_ConfA_refmac2_omitOEX_hires_full_covariance_4-10
+    n_peaks: 10                # Maximum number of peaks to find.
     threshold_sigma: 1.0      # Stop when the strongest remaining peak is below this multiple of the robust scale of the original map.
-    fit_radius: 0.5          # Radius of the Gaussian fit.
+    fit_radius: 1.5           # Radius of the Gaussian fit.
     sigma_min: 0.1            # Minimum width of the Gaussian fit.
     sigma_max: 2.0            # Maximum width of the Gaussian fit.
     max_shift: 1.2            # When fix_centers is false: maximum center shift from the seed, in Å.
-    min_separation: 1.25      # Radius in Å of the exclusion sphere around a seed after each attempt.
+    min_separation: 1.0       # Radius in Å of the exclusion sphere around a seed after each attempt.
     save_steps: false         # Save the steps of the algorithm to a file.
     fix_centers: true         # Hold each center on the seed instead of refining it.
     method: spherical         # full_covariance, isotropic, or spherical.
